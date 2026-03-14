@@ -462,6 +462,34 @@ function createServer() {
     { description: "List all views" }
   );
 
+  server.tool(
+    "get_view",
+    { id: z.number().describe("View ID") },
+    async ({ id }) => {
+      try {
+        const response = await gorgiasClient.getView(id);
+        return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "Get a specific view by ID with its filters and configuration" }
+  );
+
+  server.tool(
+    "get_view_tickets",
+    { id: z.number().describe("View ID"), limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
+    async ({ id, ...params }) => {
+      try {
+        const response = await gorgiasClient.getViewTickets(id, params);
+        return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "Get all tickets in a specific view. Use list_views first to find view IDs, then use this to see the same ticket queues your team sees in the Gorgias UI." }
+  );
+
   // ===== EVENT TOOLS =====
 
   server.tool(
