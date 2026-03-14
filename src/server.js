@@ -159,10 +159,24 @@ function createServer() {
         if (recipientAddress) messageData.source.to = [{ address: recipientAddress }];
         if (body_html) messageData.body_html = body_html;
         if (attachments && attachments.length > 0) messageData.attachments = attachments;
+        // Attribute message to "Ares" agent so it appears in Gorgias stats
+        if (from_agent) {
+          messageData.sender = { email: 'dfkh@deflorance.com' };
+        }
         await gorgiasClient.addMessageToTicket(ticket_id, messageData);
         // Auto-tag: add "replied" and remove "unreplied" by name — mirrors human agent behavior
+        // Auto-assign ticket to Ares so stats track correctly
         let tagStatus = '';
         if (from_agent) {
+          try {
+            // Find Ares user ID dynamically and assign ticket
+            const usersResp = await gorgiasClient.listUsers({ limit: 100 });
+            const allUsers = usersResp.data?.data || usersResp.data || [];
+            const aresUser = allUsers.find(u => u.email === 'dfkh@deflorance.com');
+            if (aresUser) {
+              await gorgiasClient.updateTicket(ticket_id, { assignee_user: { id: aresUser.id } });
+            }
+          } catch (assignErr) { /* non-blocking */ }
           try {
             const tagsResp = await gorgiasClient.listTags({ limit: 100 });
             const allTags = tagsResp.data?.data || tagsResp.data || [];
@@ -170,7 +184,7 @@ function createServer() {
             const unrepliedTag = allTags.find(t => t.name && t.name.toLowerCase() === 'unreplied');
             if (repliedTag) await gorgiasClient.addTagToTicket(ticket_id, repliedTag.id);
             if (unrepliedTag) await gorgiasClient.removeTagFromTicket(ticket_id, unrepliedTag.id);
-            tagStatus = '. Auto-tagged: replied=yes, unreplied=removed.';
+            tagStatus = '. Auto-tagged + assigned to Ares.';
           } catch (tagErr) { tagStatus = '. Auto-tag attempted but failed (non-blocking).'; }
         }
         return { content: [{ type: "text", text: `Message added to ticket ${ticket_id} (sent to ${recipientAddress || 'N/A'})${attachments ? ` with ${attachments.length} attachment(s)` : ''}${tagStatus}` }] };
