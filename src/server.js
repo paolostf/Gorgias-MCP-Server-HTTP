@@ -328,6 +328,48 @@ function createServer() {
     { description: "Get a specific macro by ID" }
   );
 
+  server.tool(
+    "create_macro",
+    { name: z.string().describe("Macro name"), body_text: z.string().optional().describe("Macro body plain text"), body_html: z.string().optional().describe("Macro body HTML"), actions: z.array(z.object({ name: z.string(), value: z.any() })).optional().describe("Macro actions array (e.g. set status, add tag)"), attachments: z.array(z.object({ url: z.string(), name: z.string(), content_type: z.string() })).optional().describe("File attachments with url, name, content_type") },
+    async (data) => {
+      try {
+        const response = await gorgiasClient.createMacro(data);
+        return { content: [{ type: "text", text: `Macro created: ${response.data.name} (ID: ${response.data.id})` }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "Create a new macro with name, body text/HTML, actions, and optional file attachments" }
+  );
+
+  server.tool(
+    "update_macro",
+    { id: z.number().describe("Macro ID"), name: z.string().optional().describe("Macro name"), body_text: z.string().optional().describe("Macro body plain text"), body_html: z.string().optional().describe("Macro body HTML"), actions: z.array(z.object({ name: z.string(), value: z.any() })).optional().describe("Macro actions array"), attachments: z.array(z.object({ url: z.string(), name: z.string(), content_type: z.string() })).optional().describe("File attachments") },
+    async ({ id, ...data }) => {
+      try {
+        await gorgiasClient.updateMacro(id, data);
+        return { content: [{ type: "text", text: `Macro ${id} updated` }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "Update an existing macro" }
+  );
+
+  server.tool(
+    "delete_macro",
+    { id: z.number().describe("Macro ID") },
+    async ({ id }) => {
+      try {
+        await gorgiasClient.deleteMacro(id);
+        return { content: [{ type: "text", text: `Macro ${id} deleted` }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "Delete a macro" }
+  );
+
   // ===== SATISFACTION SURVEY TOOLS =====
 
   server.tool(
