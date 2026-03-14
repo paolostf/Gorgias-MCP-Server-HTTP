@@ -80,8 +80,21 @@ class GorgiasClient {
   // ===== TAGS =====
   async listTags(params = {}) { return this.request('GET', 'tags', null, params); }
   async createTag(data) { return this.request('POST', 'tags', data); }
-  async addTagToTicket(ticketId, tagId) { return this.request('POST', `tickets/${ticketId}/tags`, { id: tagId }); }
-  async removeTagFromTicket(ticketId, tagId) { return this.request('DELETE', `tickets/${ticketId}/tags/${tagId}`); }
+  async addTagToTicket(ticketId, tagId) {
+    // Gorgias requires updating the full tags array on the ticket
+    const ticket = await this.request('GET', `tickets/${ticketId}`);
+    const existingTags = (ticket.data.tags || []).map(t => ({ id: t.id }));
+    // Don't add if already present
+    if (!existingTags.find(t => t.id === tagId)) {
+      existingTags.push({ id: tagId });
+    }
+    return this.request('PUT', `tickets/${ticketId}`, { tags: existingTags });
+  }
+  async removeTagFromTicket(ticketId, tagId) {
+    const ticket = await this.request('GET', `tickets/${ticketId}`);
+    const filteredTags = (ticket.data.tags || []).filter(t => t.id !== tagId).map(t => ({ id: t.id }));
+    return this.request('PUT', `tickets/${ticketId}`, { tags: filteredTags });
+  }
 
   // ===== MACROS =====
   async listMacros(params = {}) { return this.request('GET', 'macros', null, params); }
