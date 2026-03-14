@@ -160,7 +160,14 @@ function createServer() {
         if (body_html) messageData.body_html = body_html;
         if (attachments && attachments.length > 0) messageData.attachments = attachments;
         await gorgiasClient.addMessageToTicket(ticket_id, messageData);
-        return { content: [{ type: "text", text: `Message added to ticket ${ticket_id} (sent to ${recipientAddress || 'N/A'})${attachments ? ` with ${attachments.length} attachment(s)` : ''}` }] };
+        // Auto-tag: add "replied" (1679207) and remove "unreplied" (1679206) — mirrors human agent behavior
+        if (from_agent) {
+          try {
+            await gorgiasClient.addTagToTicket(ticket_id, 1679207);
+            await gorgiasClient.removeTagFromTicket(ticket_id, 1679206);
+          } catch (tagErr) { /* tagging is best-effort, don't fail the reply */ }
+        }
+        return { content: [{ type: "text", text: `Message added to ticket ${ticket_id} (sent to ${recipientAddress || 'N/A'})${attachments ? ` with ${attachments.length} attachment(s)` : ''}. Auto-tagged: replied=yes, unreplied=removed.` }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
