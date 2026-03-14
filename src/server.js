@@ -36,15 +36,29 @@ function createServer() {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Get a specific ticket by ID" }
+    { description: "Get a specific ticket by ID with all messages and details" }
   );
 
   server.tool(
     "create_ticket",
-    { subject: z.string().describe("Ticket subject"), message: z.string().describe("Message body text"), customer_email: z.string().email().describe("Customer email"), channel: z.string().default("api").describe("Channel"), via: z.string().default("api").describe("Via source") },
-    async ({ subject, message, customer_email, channel, via }) => {
+    { subject: z.string().describe("Ticket subject"), body_text: z.string().describe("Message body text"), customer_email: z.string().email().describe("Customer email"), channel: z.string().default("api").describe("Channel"), via: z.string().default("api").describe("Via source"), from_agent_id: z.number().optional().describe("Agent user ID sending the ticket") },
+    async ({ subject, body_text, customer_email, channel, via, from_agent_id }) => {
       try {
-        const response = await gorgiasClient.createTicket({ subject, message: { content: { text: message } }, customer: { email: customer_email }, channel, via });
+        const ticketData = {
+          subject,
+          channel,
+          via,
+          customer: { email: customer_email },
+          messages: [{
+            body_text,
+            channel,
+            via
+          }]
+        };
+        if (from_agent_id) {
+          ticketData.messages[0].from_agent = { id: from_agent_id };
+        }
+        const response = await gorgiasClient.createTicket(ticketData);
         return { content: [{ type: "text", text: `Ticket created with ID: ${response.data.id}` }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
@@ -127,19 +141,23 @@ function createServer() {
 
   server.tool(
     "add_message_to_ticket",
-    { ticket_id: z.number().describe("Ticket ID"), message: z.string().describe("Message body text"), sender_type: z.enum(["customer", "agent"]).default("agent").describe("Sender type"), via: z.string().optional().describe("Via source"), channel: z.string().optional().describe("Channel") },
-    async ({ ticket_id, message, sender_type, via, channel }) => {
+    { ticket_id: z.number().describe("Ticket ID"), body_text: z.string().describe("Message body text (plain text)"), body_html: z.string().optional().describe("Message body HTML (optional, for rich formatting)"), from_agent_id: z.number().describe("Agent user ID sending the reply (use list_users to find IDs)"), channel: z.string().default("internal-note").describe("Channel: internal-note, email, chat, etc"), via: z.string().default("api").describe("Via source") },
+    async ({ ticket_id, body_text, body_html, from_agent_id, channel, via }) => {
       try {
-        const messageData = { content: { text: message }, sender: { type: sender_type } };
-        if (via) messageData.via = via;
-        if (channel) messageData.channel = channel;
+        const messageData = {
+          body_text,
+          channel,
+          via,
+          from_agent: { id: from_agent_id }
+        };
+        if (body_html) messageData.body_html = body_html;
         await gorgiasClient.addMessageToTicket(ticket_id, messageData);
         return { content: [{ type: "text", text: `Message added to ticket ${ticket_id}` }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Add a message with full body to a ticket" }
+    { description: "Add a reply/message to a ticket. Requires from_agent_id (agent user ID). Use list_users first to get agent IDs. Set channel to 'email' to send email reply or 'internal-note' for internal note." }
   );
 
   server.tool(
@@ -331,7 +349,7 @@ function createServer() {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "List all users/agents" }
+    { description: "List all users/agents. Use this to get agent IDs needed for add_message_to_ticket." }
   );
 
   server.tool(
