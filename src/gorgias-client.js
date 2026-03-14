@@ -106,6 +106,25 @@ class GorgiasClient {
   async getView(id) { return this.request('GET', `views/${id}`); }
   async getViewTickets(id, params = {}) { return this.request('GET', `views/${id}/items`, null, params); }
 
+  // ===== TICKET MERGE =====
+  async mergeTickets(mainTicketId, ticketIds) {
+    return this.request('POST', 'tickets/merge', { main_ticket_id: mainTicketId, ticket_ids: ticketIds });
+  }
+
+  // ===== SNOOZE =====
+  async snoozeTicket(id, snoozeDatetime) {
+    return this.request('PUT', `tickets/${id}`, { snooze_datetime: snoozeDatetime });
+  }
+
+  async unsnoozeTicket(id) {
+    return this.request('PUT', `tickets/${id}`, { snooze_datetime: null });
+  }
+
+  // ===== RULES (CRUD) =====
+  async createRule(data) { return this.request('POST', 'rules', data); }
+  async updateRule(id, data) { return this.request('PUT', `rules/${id}`, data); }
+  async deleteRule(id) { return this.request('DELETE', `rules/${id}`); }
+
   // ===== EVENTS =====
   async listEvents(params = {}) { return this.request('GET', 'events', null, params); }
 
