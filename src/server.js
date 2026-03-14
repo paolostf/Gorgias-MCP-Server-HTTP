@@ -490,6 +490,118 @@ function createServer() {
     { description: "Get all tickets in a specific view. Use list_views first to find view IDs, then use this to see the same ticket queues your team sees in the Gorgias UI." }
   );
 
+  // ===== TICKET MERGE TOOL =====
+
+  server.tool(
+    "merge_tickets",
+    {
+      main_ticket_id: z.number().describe("The ticket ID that will remain (all others merge into this one)"),
+      ticket_ids: z.array(z.number()).describe("Array of ticket IDs to merge into the main ticket")
+    },
+    async ({ main_ticket_id, ticket_ids }) => {
+      try {
+        const response = await gorgiasClient.mergeTickets(main_ticket_id, ticket_ids);
+        return { content: [{ type: "text", text: `Tickets [${ticket_ids.join(', ')}] merged into ticket ${main_ticket_id}` }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "Merge multiple tickets into one main ticket. All messages from the merged tickets will appear in the main ticket. The merged tickets will be closed." }
+  );
+
+  // ===== SNOOZE TOOLS =====
+
+  server.tool(
+    "snooze_ticket",
+    {
+      id: z.number().describe("Ticket ID to snooze"),
+      snooze_datetime: z.string().describe("ISO 8601 datetime when the ticket should un-snooze and reappear (e.g. 2026-03-15T09:00:00Z)")
+    },
+    async ({ id, snooze_datetime }) => {
+      try {
+        await gorgiasClient.snoozeTicket(id, snooze_datetime);
+        return { content: [{ type: "text", text: `Ticket ${id} snoozed until ${snooze_datetime}` }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "Snooze a ticket until a specific date/time. The ticket will disappear from active views and reappear when the snooze expires." }
+  );
+
+  server.tool(
+    "unsnooze_ticket",
+    {
+      id: z.number().describe("Ticket ID to unsnooze")
+    },
+    async ({ id }) => {
+      try {
+        await gorgiasClient.unsnoozeTicket(id);
+        return { content: [{ type: "text", text: `Ticket ${id} unsnoozed — now active again` }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "Remove snooze from a ticket, making it active immediately" }
+  );
+
+  // ===== RULE CRUD TOOLS =====
+
+  server.tool(
+    "create_rule",
+    {
+      name: z.string().describe("Rule name"),
+      description: z.string().optional().describe("Rule description"),
+      conditions: z.any().optional().describe("Rule conditions (trigger criteria)"),
+      actions: z.any().optional().describe("Rule actions (what happens when triggered)")
+    },
+    async (data) => {
+      try {
+        const response = await gorgiasClient.createRule(data);
+        return { content: [{ type: "text", text: `Rule created: ${response.data.name} (ID: ${response.data.id})` }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "Create a new automation rule with conditions and actions" }
+  );
+
+  server.tool(
+    "update_rule",
+    {
+      id: z.number().describe("Rule ID to update"),
+      name: z.string().optional().describe("Updated rule name"),
+      description: z.string().optional().describe("Updated description"),
+      enabled: z.boolean().optional().describe("Enable or disable the rule"),
+      conditions: z.any().optional().describe("Updated conditions"),
+      actions: z.any().optional().describe("Updated actions")
+    },
+    async ({ id, ...data }) => {
+      try {
+        await gorgiasClient.updateRule(id, data);
+        return { content: [{ type: "text", text: `Rule ${id} updated` }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "Update an existing automation rule (name, conditions, actions, enable/disable)" }
+  );
+
+  server.tool(
+    "delete_rule",
+    {
+      id: z.number().describe("Rule ID to delete")
+    },
+    async ({ id }) => {
+      try {
+        await gorgiasClient.deleteRule(id);
+        return { content: [{ type: "text", text: `Rule ${id} deleted` }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "Delete an automation rule (CAUTION: irreversible)" }
+  );
+
   // ===== EVENT TOOLS =====
 
   server.tool(
@@ -558,3 +670,4 @@ function createServer() {
 }
 
 export { createServer };
+
