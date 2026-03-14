@@ -135,8 +135,8 @@ function createServer() {
 
   server.tool(
     "add_message_to_ticket",
-    { ticket_id: z.number().describe("Ticket ID"), body_text: z.string().describe("Message body text (plain text)"), body_html: z.string().optional().describe("Message body HTML (optional, for rich formatting)"), from_agent: z.boolean().default(true).describe("true = message from agent, false = message from customer"), channel: z.string().default("email").describe("Channel: email, internal-note, chat, etc"), via: z.string().default("api").describe("Via source"), from_address: z.string().email().default("info@deflorance.com").describe("Sender email address for email replies (e.g. info@deflorance.com)"), to_address: z.string().email().optional().describe("Recipient email address (auto-filled from ticket customer if omitted)") },
-    async ({ ticket_id, body_text, body_html, from_agent, channel, via, from_address, to_address }) => {
+    { ticket_id: z.number().describe("Ticket ID"), body_text: z.string().describe("Message body text (plain text)"), body_html: z.string().optional().describe("Message body HTML (optional, for rich formatting)"), from_agent: z.boolean().default(true).describe("true = message from agent, false = message from customer"), channel: z.string().default("email").describe("Channel: email, internal-note, chat, etc"), via: z.string().default("api").describe("Via source"), from_address: z.string().email().default("info@deflorance.com").describe("Sender email address for email replies (e.g. info@deflorance.com)"), to_address: z.string().email().optional().describe("Recipient email address (auto-filled from ticket customer if omitted)"), attachments: z.array(z.object({ url: z.string().describe("Public URL of the file"), name: z.string().describe("File name (e.g. return-label.pdf)"), content_type: z.string().describe("MIME type (e.g. application/pdf, image/png)") })).optional().describe("File attachments array. Get attachment URLs from get_macro response. Each item needs url, name, content_type.") },
+    async ({ ticket_id, body_text, body_html, from_agent, channel, via, from_address, to_address, attachments }) => {
       try {
         // Auto-populate to_address from ticket customer if not provided
         let recipientAddress = to_address;
@@ -158,13 +158,14 @@ function createServer() {
         };
         if (recipientAddress) messageData.source.to = [{ address: recipientAddress }];
         if (body_html) messageData.body_html = body_html;
+        if (attachments && attachments.length > 0) messageData.attachments = attachments;
         await gorgiasClient.addMessageToTicket(ticket_id, messageData);
-        return { content: [{ type: "text", text: `Message added to ticket ${ticket_id} (sent to ${recipientAddress || 'N/A'})` }] };
+        return { content: [{ type: "text", text: `Message added to ticket ${ticket_id} (sent to ${recipientAddress || 'N/A'})${attachments ? ` with ${attachments.length} attachment(s)` : ''}` }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Add a reply/message to a ticket. Set from_agent=true for agent replies. Default sends from info@deflorance.com. Set channel='email' for email reply, 'internal-note' for internal note." }
+    { description: "Add a reply/message to a ticket. Set from_agent=true for agent replies. Default sends from info@deflorance.com. Set channel='email' for email reply, 'internal-note' for internal note. To include macro attachments: first call get_macro to get attachment URLs, then pass them in the attachments array." }
   );
 
   server.tool(
