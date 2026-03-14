@@ -86,6 +86,9 @@ class GorgiasClient {
   // ===== MACROS =====
   async listMacros(params = {}) { return this.request('GET', 'macros', null, params); }
   async getMacro(id) { return this.request('GET', `macros/${id}`); }
+  async createMacro(data) { return this.request('POST', 'macros', data); }
+  async updateMacro(id, data) { return this.request('PUT', `macros/${id}`, data); }
+  async deleteMacro(id) { return this.request('DELETE', `macros/${id}`); }
 
   // ===== SATISFACTION SURVEYS =====
   async listSatisfactionSurveys(params = {}) { return this.request('GET', 'satisfaction-surveys', null, params); }
