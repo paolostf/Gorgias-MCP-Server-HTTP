@@ -160,14 +160,20 @@ function createServer() {
         if (body_html) messageData.body_html = body_html;
         if (attachments && attachments.length > 0) messageData.attachments = attachments;
         await gorgiasClient.addMessageToTicket(ticket_id, messageData);
-        // Auto-tag: add "replied" (1679207) and remove "unreplied" (1679206) — mirrors human agent behavior
+        // Auto-tag: add "replied" and remove "unreplied" by name — mirrors human agent behavior
+        let tagStatus = '';
         if (from_agent) {
           try {
-            await gorgiasClient.addTagToTicket(ticket_id, 1679207);
-            await gorgiasClient.removeTagFromTicket(ticket_id, 1679206);
-          } catch (tagErr) { /* tagging is best-effort, don't fail the reply */ }
+            const tagsResp = await gorgiasClient.listTags({ limit: 100 });
+            const allTags = tagsResp.data?.data || tagsResp.data || [];
+            const repliedTag = allTags.find(t => t.name && t.name.toLowerCase() === 'replied');
+            const unrepliedTag = allTags.find(t => t.name && t.name.toLowerCase() === 'unreplied');
+            if (repliedTag) await gorgiasClient.addTagToTicket(ticket_id, repliedTag.id);
+            if (unrepliedTag) await gorgiasClient.removeTagFromTicket(ticket_id, unrepliedTag.id);
+            tagStatus = '. Auto-tagged: replied=yes, unreplied=removed.';
+          } catch (tagErr) { tagStatus = '. Auto-tag attempted but failed (non-blocking).'; }
         }
-        return { content: [{ type: "text", text: `Message added to ticket ${ticket_id} (sent to ${recipientAddress || 'N/A'})${attachments ? ` with ${attachments.length} attachment(s)` : ''}. Auto-tagged: replied=yes, unreplied=removed.` }] };
+        return { content: [{ type: "text", text: `Message added to ticket ${ticket_id} (sent to ${recipientAddress || 'N/A'})${attachments ? ` with ${attachments.length} attachment(s)` : ''}${tagStatus}` }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
