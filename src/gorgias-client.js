@@ -103,6 +103,8 @@ class GorgiasClient {
 
   // ===== VIEWS =====
   async listViews(params = {}) { return this.request('GET', 'views', null, params); }
+  async getView(id) { return this.request('GET', `views/${id}`); }
+  async getViewTickets(id, params = {}) { return this.request('GET', `views/${id}/items`, null, params); }
 
   // ===== EVENTS =====
   async listEvents(params = {}) { return this.request('GET', 'events', null, params); }
