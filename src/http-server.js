@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import express from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { server } from './server.js';
+import { createServer } from './server.js';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 
@@ -10,7 +10,8 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-const transports = new Map();
+// Store transports and their associated server instances
+const sessions = new Map();
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', server: 'Gorgias MCP Server' });
@@ -19,27 +20,30 @@ app.get('/health', (req, res) => {
 app.post('/mcp', async (req, res) => {
   try {
     const sessionId = req.headers['mcp-session-id'];
-    let transport;
 
-    if (sessionId && transports.has(sessionId)) {
-      transport = transports.get(sessionId);
+    if (sessionId && sessions.has(sessionId)) {
+      // Existing session - reuse transport
+      const session = sessions.get(sessionId);
+      await session.transport.handleRequest(req, res, req.body);
     } else {
-      transport = new StreamableHTTPServerTransport({
+      // New session - create fresh server + transport
+      const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => crypto.randomUUID(),
       });
 
+      const server = createServer();
       await server.connect(transport);
 
       transport.onclose = () => {
         const sid = transport.sessionId;
-        if (sid) transports.delete(sid);
+        if (sid) sessions.delete(sid);
       };
-    }
 
-    await transport.handleRequest(req, res, req.body);
+      await transport.handleRequest(req, res, req.body);
 
-    if (!sessionId && transport.sessionId) {
-      transports.set(transport.sessionId, transport);
+      if (transport.sessionId) {
+        sessions.set(transport.sessionId, { transport, server });
+      }
     }
   } catch (error) {
     console.error('Error handling MCP request:', error);
@@ -51,20 +55,20 @@ app.post('/mcp', async (req, res) => {
 
 app.get('/mcp', async (req, res) => {
   const sessionId = req.headers['mcp-session-id'];
-  if (!sessionId || !transports.has(sessionId)) {
+  if (!sessionId || !sessions.has(sessionId)) {
     res.status(400).json({ error: 'Invalid or missing session ID' });
     return;
   }
-  const transport = transports.get(sessionId);
-  await transport.handleRequest(req, res);
+  const session = sessions.get(sessionId);
+  await session.transport.handleRequest(req, res);
 });
 
 app.delete('/mcp', async (req, res) => {
   const sessionId = req.headers['mcp-session-id'];
-  if (sessionId && transports.has(sessionId)) {
-    const transport = transports.get(sessionId);
-    await transport.close();
-    transports.delete(sessionId);
+  if (sessionId && sessions.has(sessionId)) {
+    const session = sessions.get(sessionId);
+    await session.transport.close();
+    sessions.delete(sessionId);
   }
   res.status(200).json({ status: 'session closed' });
 });
