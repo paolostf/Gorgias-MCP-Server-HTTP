@@ -13,7 +13,7 @@ function createServer() {
 
   server.tool(
     "list_tickets",
-    { limit: z.number().min(1).max(100).default(10).describe("Number of tickets"), page: z.number().min(1).default(1).describe("Page number"), order_by: z.string().optional().describe("Field to order by"), order_dir: z.enum(["asc", "desc"]).optional().describe("Order direction"), status: z.string().optional().describe("Filter by status (open, closed)"), assignee_user_id: z.number().optional().describe("Filter by assignee user ID"), customer_id: z.number().optional().describe("Filter by customer ID"), channel: z.string().optional().describe("Filter by channel"), tag_id: z.number().optional().describe("Filter by tag ID") },
+    { limit: z.number().min(1).max(100).default(10).describe("Number of tickets per page"), cursor: z.string().optional().describe("Pagination cursor from previous response"), order_by: z.string().optional().describe("Field to order by (e.g. created_datetime)"), order_dir: z.enum(["asc", "desc"]).optional().describe("Order direction"), status: z.string().optional().describe("Filter by status (open, closed)"), assignee_user_id: z.number().optional().describe("Filter by assignee user ID"), customer_id: z.number().optional().describe("Filter by customer ID"), channel: z.string().optional().describe("Filter by channel"), tag_id: z.number().optional().describe("Filter by tag ID") },
     async (params) => {
       try {
         const response = await gorgiasClient.listTickets(params);
@@ -22,7 +22,7 @@ function createServer() {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "List tickets from Gorgias with optional filters" }
+    { description: "List tickets from Gorgias with optional filters. Use cursor from previous response for pagination." }
   );
 
   server.tool(
@@ -49,11 +49,7 @@ function createServer() {
           channel,
           via,
           customer: { email: customer_email },
-          messages: [{
-            body_text,
-            channel,
-            via
-          }]
+          messages: [{ body_text, channel, via }]
         };
         if (from_agent_id) {
           ticketData.messages[0].from_agent = { id: from_agent_id };
@@ -97,10 +93,11 @@ function createServer() {
 
   server.tool(
     "search_tickets",
-    { query: z.string().describe("Search query"), limit: z.number().min(1).max(100).default(10).describe("Results per page"), page: z.number().min(1).default(1).describe("Page") },
-    async ({ query, limit, page }) => {
+    { query: z.string().describe("Search query"), limit: z.number().min(1).max(100).default(10).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
+    async (params) => {
       try {
-        const response = await gorgiasClient.searchTickets(query, { limit, page });
+        const { query, ...rest } = params;
+        const response = await gorgiasClient.searchTickets(query, rest);
         return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
@@ -113,10 +110,10 @@ function createServer() {
 
   server.tool(
     "list_messages",
-    { ticket_id: z.number().describe("Ticket ID"), limit: z.number().min(1).max(100).default(20).describe("Results per page"), page: z.number().min(1).default(1).describe("Page") },
-    async ({ ticket_id, limit, page }) => {
+    { ticket_id: z.number().describe("Ticket ID"), limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
+    async ({ ticket_id, ...params }) => {
       try {
-        const response = await gorgiasClient.listMessages(ticket_id, { limit, page });
+        const response = await gorgiasClient.listMessages(ticket_id, params);
         return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
@@ -141,7 +138,7 @@ function createServer() {
 
   server.tool(
     "add_message_to_ticket",
-    { ticket_id: z.number().describe("Ticket ID"), body_text: z.string().describe("Message body text (plain text)"), body_html: z.string().optional().describe("Message body HTML (optional, for rich formatting)"), from_agent_id: z.number().describe("Agent user ID sending the reply (use list_users to find IDs)"), channel: z.string().default("internal-note").describe("Channel: internal-note, email, chat, etc"), via: z.string().default("api").describe("Via source") },
+    { ticket_id: z.number().describe("Ticket ID"), body_text: z.string().describe("Message body text (plain text)"), body_html: z.string().optional().describe("Message body HTML (optional, for rich formatting)"), from_agent_id: z.number().describe("Agent user ID sending the reply. REQUIRED. Use list_users to find agent IDs."), channel: z.string().default("internal-note").describe("Channel: internal-note, email, chat, etc"), via: z.string().default("api").describe("Via source") },
     async ({ ticket_id, body_text, body_html, from_agent_id, channel, via }) => {
       try {
         const messageData = {
@@ -157,7 +154,7 @@ function createServer() {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Add a reply/message to a ticket. Requires from_agent_id (agent user ID). Use list_users first to get agent IDs. Set channel to 'email' to send email reply or 'internal-note' for internal note." }
+    { description: "Add a reply/message to a ticket. IMPORTANT: from_agent_id is required - call list_users first to get the agent ID. Set channel to 'email' for email reply or 'internal-note' for internal note." }
   );
 
   server.tool(
@@ -178,7 +175,7 @@ function createServer() {
 
   server.tool(
     "list_customers",
-    { limit: z.number().min(1).max(100).default(10).describe("Results per page"), page: z.number().min(1).default(1).describe("Page"), email: z.string().email().optional().describe("Filter by email") },
+    { limit: z.number().min(1).max(100).default(10).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor"), email: z.string().email().optional().describe("Filter by email") },
     async (params) => {
       try {
         const response = await gorgiasClient.listCustomers(params);
@@ -236,7 +233,7 @@ function createServer() {
 
   server.tool(
     "list_tags",
-    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), page: z.number().min(1).default(1).describe("Page") },
+    { limit: z.number().min(1).max(100).default(30).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor"), order_by: z.string().optional().describe("Field to order by") },
     async (params) => {
       try {
         const response = await gorgiasClient.listTags(params);
@@ -294,7 +291,7 @@ function createServer() {
 
   server.tool(
     "list_macros",
-    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), page: z.number().min(1).default(1).describe("Page") },
+    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
     async (params) => {
       try {
         const response = await gorgiasClient.listMacros(params);
@@ -324,7 +321,7 @@ function createServer() {
 
   server.tool(
     "list_satisfaction_surveys",
-    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), page: z.number().min(1).default(1).describe("Page"), ticket_id: z.number().optional().describe("Filter by ticket ID") },
+    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor"), ticket_id: z.number().optional().describe("Filter by ticket ID") },
     async (params) => {
       try {
         const response = await gorgiasClient.listSatisfactionSurveys(params);
@@ -340,7 +337,7 @@ function createServer() {
 
   server.tool(
     "list_users",
-    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), page: z.number().min(1).default(1).describe("Page") },
+    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
     async (params) => {
       try {
         const response = await gorgiasClient.listUsers(params);
@@ -370,7 +367,7 @@ function createServer() {
 
   server.tool(
     "list_rules",
-    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), page: z.number().min(1).default(1).describe("Page") },
+    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
     async (params) => {
       try {
         const response = await gorgiasClient.listRules(params);
@@ -400,7 +397,7 @@ function createServer() {
 
   server.tool(
     "list_views",
-    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), page: z.number().min(1).default(1).describe("Page") },
+    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
     async (params) => {
       try {
         const response = await gorgiasClient.listViews(params);
@@ -416,7 +413,7 @@ function createServer() {
 
   server.tool(
     "list_events",
-    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), page: z.number().min(1).default(1).describe("Page"), customer_id: z.number().optional().describe("Filter by customer ID"), ticket_id: z.number().optional().describe("Filter by ticket ID") },
+    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor"), customer_id: z.number().optional().describe("Filter by customer ID"), ticket_id: z.number().optional().describe("Filter by ticket ID") },
     async (params) => {
       try {
         const response = await gorgiasClient.listEvents(params);
@@ -432,7 +429,7 @@ function createServer() {
 
   server.tool(
     "list_integrations",
-    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), page: z.number().min(1).default(1).describe("Page") },
+    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
     async (params) => {
       try {
         const response = await gorgiasClient.listIntegrations(params);
@@ -448,7 +445,7 @@ function createServer() {
 
   server.tool(
     "list_custom_fields",
-    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), page: z.number().min(1).default(1).describe("Page") },
+    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
     async (params) => {
       try {
         const response = await gorgiasClient.listCustomFields(params);
