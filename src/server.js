@@ -138,6 +138,15 @@ function createServer() {
     { ticket_id: z.number().describe("Ticket ID"), body_text: z.string().describe("Message body text (plain text)"), body_html: z.string().optional().describe("Message body HTML (optional, for rich formatting)"), from_agent: z.boolean().default(true).describe("true = message from agent, false = message from customer"), channel: z.string().default("email").describe("Channel: email, internal-note, chat, etc"), via: z.string().default("api").describe("Via source"), from_address: z.string().email().default("info@deflorance.com").describe("Sender email address for email replies (e.g. info@deflorance.com)"), to_address: z.string().email().optional().describe("Recipient email address (auto-filled from ticket customer if omitted)") },
     async ({ ticket_id, body_text, body_html, from_agent, channel, via, from_address, to_address }) => {
       try {
+        // Auto-populate to_address from ticket customer if not provided
+        let recipientAddress = to_address;
+        if (!recipientAddress && channel === 'email') {
+          const ticketResp = await gorgiasClient.getTicket(ticket_id);
+          const customer = ticketResp.data?.customer;
+          if (customer?.email) {
+            recipientAddress = customer.email;
+          }
+        }
         const messageData = {
           body_text,
           from_agent,
@@ -147,10 +156,10 @@ function createServer() {
             from: { address: from_address },
           }
         };
-        if (to_address) messageData.source.to = [{ address: to_address }];
+        if (recipientAddress) messageData.source.to = [{ address: recipientAddress }];
         if (body_html) messageData.body_html = body_html;
         await gorgiasClient.addMessageToTicket(ticket_id, messageData);
-        return { content: [{ type: "text", text: `Message added to ticket ${ticket_id}` }] };
+        return { content: [{ type: "text", text: `Message added to ticket ${ticket_id} (sent to ${recipientAddress || 'N/A'})` }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
