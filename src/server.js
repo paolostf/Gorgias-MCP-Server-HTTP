@@ -135,15 +135,19 @@ function createServer() {
 
   server.tool(
     "add_message_to_ticket",
-    { ticket_id: z.number().describe("Ticket ID"), body_text: z.string().describe("Message body text (plain text)"), body_html: z.string().optional().describe("Message body HTML (optional, for rich formatting)"), from_agent: z.boolean().default(true).describe("true = message from agent, false = message from customer"), channel: z.string().default("email").describe("Channel: email, internal-note, chat, etc"), via: z.string().default("api").describe("Via source") },
-    async ({ ticket_id, body_text, body_html, from_agent, channel, via }) => {
+    { ticket_id: z.number().describe("Ticket ID"), body_text: z.string().describe("Message body text (plain text)"), body_html: z.string().optional().describe("Message body HTML (optional, for rich formatting)"), from_agent: z.boolean().default(true).describe("true = message from agent, false = message from customer"), channel: z.string().default("email").describe("Channel: email, internal-note, chat, etc"), via: z.string().default("api").describe("Via source"), from_address: z.string().email().default("info@deflorance.com").describe("Sender email address for email replies (e.g. info@deflorance.com)"), to_address: z.string().email().optional().describe("Recipient email address (auto-filled from ticket customer if omitted)") },
+    async ({ ticket_id, body_text, body_html, from_agent, channel, via, from_address, to_address }) => {
       try {
         const messageData = {
           body_text,
           from_agent,
           channel,
-          via
+          via,
+          source: {
+            from: { address: from_address },
+          }
         };
+        if (to_address) messageData.source.to = [{ address: to_address }];
         if (body_html) messageData.body_html = body_html;
         await gorgiasClient.addMessageToTicket(ticket_id, messageData);
         return { content: [{ type: "text", text: `Message added to ticket ${ticket_id}` }] };
@@ -151,7 +155,7 @@ function createServer() {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Add a reply/message to a ticket. Set from_agent=true for agent replies. Set channel='email' to send email reply, 'internal-note' for internal note." }
+    { description: "Add a reply/message to a ticket. Set from_agent=true for agent replies. Default sends from info@deflorance.com. Set channel='email' for email reply, 'internal-note' for internal note." }
   );
 
   server.tool(
