@@ -45,9 +45,7 @@ function createServer() {
     async ({ subject, body_text, customer_email, channel, via, from_agent }) => {
       try {
         const ticketData = {
-          subject,
-          channel,
-          via,
+          subject, channel, via,
           customer: { email: customer_email },
           messages: [{ body_text, channel, via, from_agent }]
         };
@@ -143,18 +141,11 @@ function createServer() {
         if (!recipientAddress && channel === 'email') {
           const ticketResp = await gorgiasClient.getTicket(ticket_id);
           const customer = ticketResp.data?.customer;
-          if (customer?.email) {
-            recipientAddress = customer.email;
-          }
+          if (customer?.email) recipientAddress = customer.email;
         }
         const messageData = {
-          body_text,
-          from_agent,
-          channel,
-          via,
-          source: {
-            from: { address: from_address },
-          }
+          body_text, from_agent, channel, via,
+          source: { from: { address: from_address } }
         };
         if (recipientAddress) messageData.source.to = [{ address: recipientAddress }];
         if (body_html) messageData.body_html = body_html;
@@ -164,12 +155,11 @@ function createServer() {
           messageData.sender = { email: 'dfkh@deflorance.com' };
         }
         await gorgiasClient.addMessageToTicket(ticket_id, messageData);
-        // Auto-tag: add "replied" and remove "unreplied" by name — mirrors human agent behavior
+        // Auto-tag: add "replied" and remove "unreplied" — mirrors human agent behavior
         // Auto-assign ticket to Ares so stats track correctly
         let tagStatus = '';
         if (from_agent) {
           try {
-            // Find Ares user ID dynamically and assign ticket
             const usersResp = await gorgiasClient.listUsers({ limit: 100 });
             const allUsers = usersResp.data?.data || usersResp.data || [];
             const aresUser = allUsers.find(u => u.email === 'dfkh@deflorance.com');
@@ -357,7 +347,7 @@ function createServer() {
 
   server.tool(
     "create_macro",
-    { name: z.string().describe("Macro name"), body_text: z.string().optional().describe("Macro response body plain text — auto-creates set-message-body action"), body_html: z.string().optional().describe("Macro response body HTML — auto-creates set-message-body action"), actions: z.array(z.object({ name: z.string().describe("Action name e.g. set-message-body, set-status, add-tags, set-assignee"), title: z.string().optional().describe("Action display title"), type: z.string().optional().default("action").describe("Action type, usually 'action'"), arguments: z.record(z.any()).optional().describe("Action arguments object e.g. {body_html, body_text} or {status} or {tags: [id]}") })).optional().describe("Full Gorgias actions array. If omitted but body_text/body_html provided, a set-message-body action is auto-created"), attachments: z.array(z.object({ url: z.string(), name: z.string(), content_type: z.string() })).optional().describe("File attachments with url, name, content_type") },
+    { name: z.string().describe("Macro name"), body_text: z.string().optional().describe("Macro response body plain text — auto-creates setResponseText action"), body_html: z.string().optional().describe("Macro response body HTML — auto-creates setResponseText action"), actions: z.array(z.object({ name: z.enum(["setResponseText", "setStatus", "addTags", "removeTags"]).describe("Action name: setResponseText, setStatus, addTags, removeTags"), title: z.string().optional().describe("Action display title"), type: z.enum(["user", "system"]).optional().default("user").describe("Action type: user or system"), arguments: z.record(z.any()).optional().describe("Action arguments e.g. {body_html, body_text} or {status} or {tags: [id]}") })).optional().describe("Full Gorgias actions array. If omitted but body_text/body_html provided, a setResponseText action is auto-created"), attachments: z.array(z.object({ url: z.string(), name: z.string(), content_type: z.string() })).optional().describe("File attachments with url, name, content_type") },
     async ({ name, body_text, body_html, actions, attachments }) => {
       try {
         const macroData = { name };
@@ -366,12 +356,12 @@ function createServer() {
         // Build actions array
         let finalActions = actions || [];
 
-        // If body_text or body_html provided but no set-message-body action exists, auto-create it
-        if ((body_text || body_html) && !finalActions.some(a => a.name === 'set-message-body')) {
+        // If body_text or body_html provided but no setResponseText action exists, auto-create one
+        if ((body_text || body_html) && !finalActions.some(a => a.name === 'setResponseText')) {
           const msgArgs = {};
           if (body_text) msgArgs.body_text = body_text;
           if (body_html) msgArgs.body_html = body_html;
-          finalActions = [{ name: 'set-message-body', title: 'Set message body', type: 'action', arguments: msgArgs }, ...finalActions];
+          finalActions = [{ name: 'setResponseText', title: 'Set response text', type: 'user', arguments: msgArgs }, ...finalActions];
         }
 
         if (finalActions.length > 0) macroData.actions = finalActions;
@@ -382,34 +372,41 @@ function createServer() {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Create a new macro. Pass body_text/body_html for auto response text, or pass full actions array with {name, title, type, arguments} for advanced control (e.g. set-status, add-tags, set-assignee)" }
+    { description: "Create a new macro. Pass body_text/body_html for auto response text, or pass full actions array. Valid action names: setResponseText, setStatus, addTags, removeTags. Action type must be 'user'. NOTE: Template variables with double curly braces cannot be set via API — add them manually in Gorgias UI after creation." }
   );
 
   server.tool(
     "update_macro",
-    { id: z.number().describe("Macro ID"), name: z.string().optional().describe("Macro name"), body_text: z.string().optional().describe("New response body plain text — auto-creates set-message-body action"), body_html: z.string().optional().describe("New response body HTML — auto-creates set-message-body action"), actions: z.array(z.object({ name: z.string().describe("Action name e.g. set-message-body, set-status, add-tags"), title: z.string().optional(), type: z.string().optional().default("action"), arguments: z.record(z.any()).optional() })).optional().describe("Full Gorgias actions array with {name, title, type, arguments}"), attachments: z.array(z.object({ url: z.string(), name: z.string(), content_type: z.string() })).optional().describe("File attachments") },
+    { id: z.number().describe("Macro ID"), name: z.string().optional().describe("Macro name (if omitted, existing name is preserved automatically)"), body_text: z.string().optional().describe("New response body plain text — auto-creates setResponseText action"), body_html: z.string().optional().describe("New response body HTML — auto-creates setResponseText action"), actions: z.array(z.object({ name: z.enum(["setResponseText", "setStatus", "addTags", "removeTags"]).describe("Action name: setResponseText, setStatus, addTags, removeTags"), title: z.string().optional(), type: z.enum(["user", "system"]).optional().default("user"), arguments: z.record(z.any()).optional() })).optional().describe("Full Gorgias actions array"), attachments: z.array(z.object({ url: z.string(), name: z.string(), content_type: z.string() })).optional().describe("File attachments") },
     async ({ id, name, body_text, body_html, actions, attachments }) => {
       try {
         const macroData = {};
-        if (name) macroData.name = name;
         if (attachments) macroData.attachments = attachments;
 
+        // Gorgias API requires name even for non-name updates — auto-fetch if not provided
+        if (name) {
+          macroData.name = name;
+        } else {
+          const existing = await gorgiasClient.getMacro(id);
+          macroData.name = existing.data.name;
+        }
+
         let finalActions = actions || [];
-        if ((body_text || body_html) && !finalActions.some(a => a.name === 'set-message-body')) {
+        if ((body_text || body_html) && !finalActions.some(a => a.name === 'setResponseText')) {
           const msgArgs = {};
           if (body_text) msgArgs.body_text = body_text;
           if (body_html) msgArgs.body_html = body_html;
-          finalActions = [{ name: 'set-message-body', title: 'Set message body', type: 'action', arguments: msgArgs }, ...finalActions];
+          finalActions = [{ name: 'setResponseText', title: 'Set response text', type: 'user', arguments: msgArgs }, ...finalActions];
         }
         if (finalActions.length > 0) macroData.actions = finalActions;
 
         await gorgiasClient.updateMacro(id, macroData);
-        return { content: [{ type: "text", text: `Macro ${id} updated` }] };
+        return { content: [{ type: "text", text: `Macro ${id} updated (name: ${macroData.name})` }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Update an existing macro. Pass body_text/body_html to replace response text, or full actions array for advanced control" }
+    { description: "Update an existing macro. Name is auto-preserved if not provided. Pass body_text/body_html to replace response text. Valid action names: setResponseText, setStatus, addTags, removeTags. NOTE: Template variables with double curly braces cannot be set via API — edit them manually in Gorgias UI." }
   );
 
   server.tool(
@@ -726,4 +723,3 @@ function createServer() {
 }
 
 export { createServer };
-
