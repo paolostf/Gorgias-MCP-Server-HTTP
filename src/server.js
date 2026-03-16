@@ -2,6 +2,14 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { gorgiasClient } from './gorgias-client.js';
 
+// Convert [[variable]] placeholders to {{variable}} for Gorgias template variables.
+// The Notion agent conversation system strips double curly braces, so the agent uses
+// double square brackets as an escape syntax. This function converts them back.
+function convertPlaceholders(text) {
+  if (!text) return text;
+  return text.replace(/\[\[([^\]]+)\]\]/g, '{{$1}}');
+}
+
 function createServer() {
   const server = new McpServer({
     name: "Gorgias API",
@@ -353,14 +361,29 @@ function createServer() {
         const macroData = { name };
         if (attachments) macroData.attachments = attachments;
 
+        // Convert [[placeholder]] → {{placeholder}} for Gorgias template variables
+        const safeBodyText = convertPlaceholders(body_text);
+        const safeBodyHtml = convertPlaceholders(body_html);
+
         // Build actions array
         let finalActions = actions || [];
 
+        // Convert placeholders inside any action arguments too
+        finalActions = finalActions.map(a => {
+          if (a.arguments) {
+            const converted = { ...a.arguments };
+            if (converted.body_text) converted.body_text = convertPlaceholders(converted.body_text);
+            if (converted.body_html) converted.body_html = convertPlaceholders(converted.body_html);
+            return { ...a, arguments: converted };
+          }
+          return a;
+        });
+
         // If body_text or body_html provided but no setResponseText action exists, auto-create one
-        if ((body_text || body_html) && !finalActions.some(a => a.name === 'setResponseText')) {
+        if ((safeBodyText || safeBodyHtml) && !finalActions.some(a => a.name === 'setResponseText')) {
           const msgArgs = {};
-          if (body_text) msgArgs.body_text = body_text;
-          if (body_html) msgArgs.body_html = body_html;
+          if (safeBodyText) msgArgs.body_text = safeBodyText;
+          if (safeBodyHtml) msgArgs.body_html = safeBodyHtml;
           finalActions = [{ name: 'setResponseText', title: 'Set response text', type: 'user', arguments: msgArgs }, ...finalActions];
         }
 
@@ -372,7 +395,7 @@ function createServer() {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Create a new macro. Pass body_text/body_html for auto response text, or pass full actions array. Valid action names: setResponseText, setStatus, addTags, removeTags. Action type must be 'user'. NOTE: Template variables with double curly braces cannot be set via API — add them manually in Gorgias UI after creation." }
+    { description: "Create a new macro. Pass body_text/body_html for auto response text, or pass full actions array. Valid action names: setResponseText, setStatus, addTags, removeTags. Action type must be 'user'. For Gorgias template variables, use DOUBLE SQUARE BRACKETS: [[ticket.customer.firstname]], [[ticket.customer.lastname]], [[ticket.id]], etc. The server auto-converts [[var]] to curly brace syntax that Gorgias expects." }
   );
 
   server.tool(
@@ -391,11 +414,27 @@ function createServer() {
           macroData.name = existing.data.name;
         }
 
+        // Convert [[placeholder]] → {{placeholder}} for Gorgias template variables
+        const safeBodyText = convertPlaceholders(body_text);
+        const safeBodyHtml = convertPlaceholders(body_html);
+
         let finalActions = actions || [];
-        if ((body_text || body_html) && !finalActions.some(a => a.name === 'setResponseText')) {
+
+        // Convert placeholders inside any action arguments too
+        finalActions = finalActions.map(a => {
+          if (a.arguments) {
+            const converted = { ...a.arguments };
+            if (converted.body_text) converted.body_text = convertPlaceholders(converted.body_text);
+            if (converted.body_html) converted.body_html = convertPlaceholders(converted.body_html);
+            return { ...a, arguments: converted };
+          }
+          return a;
+        });
+
+        if ((safeBodyText || safeBodyHtml) && !finalActions.some(a => a.name === 'setResponseText')) {
           const msgArgs = {};
-          if (body_text) msgArgs.body_text = body_text;
-          if (body_html) msgArgs.body_html = body_html;
+          if (safeBodyText) msgArgs.body_text = safeBodyText;
+          if (safeBodyHtml) msgArgs.body_html = safeBodyHtml;
           finalActions = [{ name: 'setResponseText', title: 'Set response text', type: 'user', arguments: msgArgs }, ...finalActions];
         }
         if (finalActions.length > 0) macroData.actions = finalActions;
@@ -406,7 +445,7 @@ function createServer() {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Update an existing macro. Name is auto-preserved if not provided. Pass body_text/body_html to replace response text. Valid action names: setResponseText, setStatus, addTags, removeTags. NOTE: Template variables with double curly braces cannot be set via API — edit them manually in Gorgias UI." }
+    { description: "Update an existing macro. Name is auto-preserved if not provided. Pass body_text/body_html to replace response text. Valid action names: setResponseText, setStatus, addTags, removeTags. For Gorgias template variables, use DOUBLE SQUARE BRACKETS: [[ticket.customer.firstname]], [[ticket.customer.lastname]], [[ticket.id]], etc. The server auto-converts [[var]] to curly brace syntax." }
   );
 
   server.tool(
