@@ -357,30 +357,59 @@ function createServer() {
 
   server.tool(
     "create_macro",
-    { name: z.string().describe("Macro name"), body_text: z.string().optional().describe("Macro body plain text"), body_html: z.string().optional().describe("Macro body HTML"), actions: z.array(z.object({ name: z.string(), value: z.any() })).optional().describe("Macro actions array (e.g. set status, add tag)"), attachments: z.array(z.object({ url: z.string(), name: z.string(), content_type: z.string() })).optional().describe("File attachments with url, name, content_type") },
-    async (data) => {
+    { name: z.string().describe("Macro name"), body_text: z.string().optional().describe("Macro response body plain text — auto-creates set-message-body action"), body_html: z.string().optional().describe("Macro response body HTML — auto-creates set-message-body action"), actions: z.array(z.object({ name: z.string().describe("Action name e.g. set-message-body, set-status, add-tags, set-assignee"), title: z.string().optional().describe("Action display title"), type: z.string().optional().default("action").describe("Action type, usually 'action'"), arguments: z.record(z.any()).optional().describe("Action arguments object e.g. {body_html, body_text} or {status} or {tags: [id]}") })).optional().describe("Full Gorgias actions array. If omitted but body_text/body_html provided, a set-message-body action is auto-created"), attachments: z.array(z.object({ url: z.string(), name: z.string(), content_type: z.string() })).optional().describe("File attachments with url, name, content_type") },
+    async ({ name, body_text, body_html, actions, attachments }) => {
       try {
-        const response = await gorgiasClient.createMacro(data);
+        const macroData = { name };
+        if (attachments) macroData.attachments = attachments;
+
+        // Build actions array
+        let finalActions = actions || [];
+
+        // If body_text or body_html provided but no set-message-body action exists, auto-create it
+        if ((body_text || body_html) && !finalActions.some(a => a.name === 'set-message-body')) {
+          const msgArgs = {};
+          if (body_text) msgArgs.body_text = body_text;
+          if (body_html) msgArgs.body_html = body_html;
+          finalActions = [{ name: 'set-message-body', title: 'Set message body', type: 'action', arguments: msgArgs }, ...finalActions];
+        }
+
+        if (finalActions.length > 0) macroData.actions = finalActions;
+
+        const response = await gorgiasClient.createMacro(macroData);
         return { content: [{ type: "text", text: `Macro created: ${response.data.name} (ID: ${response.data.id})` }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Create a new macro with name, body text/HTML, actions, and optional file attachments" }
+    { description: "Create a new macro. Pass body_text/body_html for auto response text, or pass full actions array with {name, title, type, arguments} for advanced control (e.g. set-status, add-tags, set-assignee)" }
   );
 
   server.tool(
     "update_macro",
-    { id: z.number().describe("Macro ID"), name: z.string().optional().describe("Macro name"), body_text: z.string().optional().describe("Macro body plain text"), body_html: z.string().optional().describe("Macro body HTML"), actions: z.array(z.object({ name: z.string(), value: z.any() })).optional().describe("Macro actions array"), attachments: z.array(z.object({ url: z.string(), name: z.string(), content_type: z.string() })).optional().describe("File attachments") },
-    async ({ id, ...data }) => {
+    { id: z.number().describe("Macro ID"), name: z.string().optional().describe("Macro name"), body_text: z.string().optional().describe("New response body plain text — auto-creates set-message-body action"), body_html: z.string().optional().describe("New response body HTML — auto-creates set-message-body action"), actions: z.array(z.object({ name: z.string().describe("Action name e.g. set-message-body, set-status, add-tags"), title: z.string().optional(), type: z.string().optional().default("action"), arguments: z.record(z.any()).optional() })).optional().describe("Full Gorgias actions array with {name, title, type, arguments}"), attachments: z.array(z.object({ url: z.string(), name: z.string(), content_type: z.string() })).optional().describe("File attachments") },
+    async ({ id, name, body_text, body_html, actions, attachments }) => {
       try {
-        await gorgiasClient.updateMacro(id, data);
+        const macroData = {};
+        if (name) macroData.name = name;
+        if (attachments) macroData.attachments = attachments;
+
+        let finalActions = actions || [];
+        if ((body_text || body_html) && !finalActions.some(a => a.name === 'set-message-body')) {
+          const msgArgs = {};
+          if (body_text) msgArgs.body_text = body_text;
+          if (body_html) msgArgs.body_html = body_html;
+          finalActions = [{ name: 'set-message-body', title: 'Set message body', type: 'action', arguments: msgArgs }, ...finalActions];
+        }
+        if (finalActions.length > 0) macroData.actions = finalActions;
+
+        await gorgiasClient.updateMacro(id, macroData);
         return { content: [{ type: "text", text: `Macro ${id} updated` }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Update an existing macro" }
+    { description: "Update an existing macro. Pass body_text/body_html to replace response text, or full actions array for advanced control" }
   );
 
   server.tool(
