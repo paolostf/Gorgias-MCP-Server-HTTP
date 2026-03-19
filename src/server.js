@@ -10,6 +10,38 @@ function convertPlaceholders(text) {
   return text.replace(/\[\[([^\]]+)\]\]/g, '{{$1}}');
 }
 
+// Auto-correct common wrong Gorgias variable names to the correct ones.
+// The agent frequently uses wrong variable names (e.g. firstname vs first_name).
+const VARIABLE_CORRECTIONS = {
+  'ticket.customer.firstname': 'ticket.customer.first_name',
+  'ticket.customer.lastname': 'ticket.customer.last_name',
+  'ticket.customer.fullname': 'ticket.customer.full_name',
+  'current_user.firstname': 'current_agent.first_name',
+  'current_user.lastname': 'current_agent.last_name',
+  'current_user.first_name': 'current_agent.first_name',
+  'current_user.last_name': 'current_agent.last_name',
+  'current_user.name': 'current_agent.first_name',
+  'ticket.assignee_name': 'current_agent.first_name',
+  'ticket.assignee_user.name': 'current_agent.first_name',
+  'ticket.assignee_user.firstname': 'current_agent.first_name',
+};
+
+function fixVariableNames(text) {
+  if (!text) return text;
+  let result = text;
+  for (const [wrong, correct] of Object.entries(VARIABLE_CORRECTIONS)) {
+    // Fix inside {{...}} and [[...]] and plain text references
+    result = result.replace(new RegExp(wrong.replace(/\./g, '\\.'), 'gi'), correct);
+  }
+  return result;
+}
+
+// Apply both placeholder conversion AND variable name correction
+function processTemplateText(text) {
+  if (!text) return text;
+  return convertPlaceholders(fixVariableNames(text));
+}
+
 function createServer() {
   const server = new McpServer({
     name: "Gorgias API",
@@ -355,31 +387,42 @@ function createServer() {
 
   server.tool(
     "create_macro",
-    { name: z.string().describe("Macro name"), body_text: z.string().optional().describe("Macro response body plain text — auto-creates setResponseText action"), body_html: z.string().optional().describe("Macro response body HTML — auto-creates setResponseText action"), actions: z.array(z.object({ name: z.enum(["setResponseText", "setStatus", "addTags", "removeTags"]).describe("Action name: setResponseText, setStatus, addTags, removeTags"), title: z.string().optional().describe("Action display title"), type: z.enum(["user", "system"]).optional().default("user").describe("Action type: user or system"), arguments: z.record(z.any()).optional().describe("Action arguments e.g. {body_html, body_text} or {status} or {tags: [id]}") })).optional().describe("Full Gorgias actions array. If omitted but body_text/body_html provided, a setResponseText action is auto-created"), attachments: z.array(z.object({ url: z.string(), name: z.string(), content_type: z.string() })).optional().describe("File attachments with url, name, content_type") },
+    { name: z.string().describe("Macro name — MUST be unique. Server checks for duplicates before creating."), body_text: z.string().optional().describe("Response body plain text — auto-creates setResponseText action"), body_html: z.string().optional().describe("Response body HTML — auto-creates setResponseText action"), actions: z.array(z.object({ name: z.string().describe("Action name: setResponseText, setStatus, addTags, removeTags, addAttachments"), title: z.string().optional().describe("Action display title"), type: z.string().optional().default("user").describe("Action type: user or system"), arguments: z.record(z.any()).optional().describe("Action arguments") })).optional().describe("Full Gorgias actions array"), attachments: z.array(z.object({ url: z.string(), name: z.string(), content_type: z.string() })).optional().describe("File attachments with url, name, content_type") },
     async ({ name, body_text, body_html, actions, attachments }) => {
       try {
+        // DUPLICATE CHECK: Search for existing macro with same name before creating
+        let duplicateWarning = '';
+        try {
+          const existingMacros = await gorgiasClient.listMacros({ limit: 100 });
+          const allMacros = existingMacros.data?.data || existingMacros.data || [];
+          const duplicate = allMacros.find(m => m.name && m.name.toLowerCase() === name.toLowerCase());
+          if (duplicate) {
+            return { content: [{ type: "text", text: `DUPLICATE BLOCKED: A macro named "${duplicate.name}" already exists (ID: ${duplicate.id}). Use update_macro to modify it, or choose a different name.` }], isError: true };
+          }
+        } catch (dupErr) { /* non-blocking — proceed with creation */ }
+
         const macroData = { name };
         if (attachments) macroData.attachments = attachments;
 
-        // Convert [[placeholder]] → {{placeholder}} for Gorgias template variables
-        const safeBodyText = convertPlaceholders(body_text);
-        const safeBodyHtml = convertPlaceholders(body_html);
+        // Process template text: fix variable names + convert [[var]] → {{var}}
+        const safeBodyText = processTemplateText(body_text);
+        const safeBodyHtml = processTemplateText(body_html);
 
         // Build actions array
         let finalActions = actions || [];
 
-        // Convert placeholders inside any action arguments too
+        // Process placeholders and variable names inside action arguments
         finalActions = finalActions.map(a => {
           if (a.arguments) {
             const converted = { ...a.arguments };
-            if (converted.body_text) converted.body_text = convertPlaceholders(converted.body_text);
-            if (converted.body_html) converted.body_html = convertPlaceholders(converted.body_html);
+            if (converted.body_text) converted.body_text = processTemplateText(converted.body_text);
+            if (converted.body_html) converted.body_html = processTemplateText(converted.body_html);
             return { ...a, arguments: converted };
           }
           return a;
         });
 
-        // If body_text or body_html provided but no setResponseText action exists, auto-create one
+        // Auto-create setResponseText if body provided but no such action exists
         if ((safeBodyText || safeBodyHtml) && !finalActions.some(a => a.name === 'setResponseText')) {
           const msgArgs = {};
           if (safeBodyText) msgArgs.body_text = safeBodyText;
@@ -395,57 +438,82 @@ function createServer() {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Create a new macro. Pass body_text/body_html for auto response text, or pass full actions array. Valid action names: setResponseText, setStatus, addTags, removeTags. Action type must be 'user'. For Gorgias template variables, use DOUBLE SQUARE BRACKETS: [[ticket.customer.firstname]], [[ticket.customer.lastname]], [[ticket.id]], etc. The server auto-converts [[var]] to curly brace syntax that Gorgias expects." }
+    { description: "Create a new macro. CHECKS FOR DUPLICATES — will block if name already exists. Pass body_text/body_html for auto response text, or full actions array. Valid actions: setResponseText, setStatus, addTags, removeTags, addAttachments. For template variables use DOUBLE SQUARE BRACKETS: [[ticket.customer.first_name]], [[current_agent.first_name]], [[ticket.id]]. CORRECT variable names: ticket.customer.first_name (NOT firstname), ticket.customer.last_name, current_agent.first_name (NOT current_user), ticket.id, ticket.subject." }
   );
 
   server.tool(
     "update_macro",
-    { id: z.number().describe("Macro ID"), name: z.string().optional().describe("Macro name (if omitted, existing name is preserved automatically)"), body_text: z.string().optional().describe("New response body plain text — auto-creates setResponseText action"), body_html: z.string().optional().describe("New response body HTML — auto-creates setResponseText action"), actions: z.array(z.object({ name: z.enum(["setResponseText", "setStatus", "addTags", "removeTags"]).describe("Action name: setResponseText, setStatus, addTags, removeTags"), title: z.string().optional(), type: z.enum(["user", "system"]).optional().default("user"), arguments: z.record(z.any()).optional() })).optional().describe("Full Gorgias actions array"), attachments: z.array(z.object({ url: z.string(), name: z.string(), content_type: z.string() })).optional().describe("File attachments") },
+    { id: z.number().describe("Macro ID"), name: z.string().optional().describe("Macro name (auto-preserved if omitted)"), body_text: z.string().optional().describe("New response body plain text"), body_html: z.string().optional().describe("New response body HTML"), actions: z.array(z.object({ name: z.string().describe("Action name: setResponseText, setStatus, addTags, removeTags, addAttachments"), title: z.string().optional(), type: z.string().optional().default("user"), arguments: z.record(z.any()).optional() })).optional().describe("Actions to ADD or REPLACE. Existing actions of OTHER types are PRESERVED automatically. e.g. adding addTags will NOT remove existing addAttachments."), attachments: z.array(z.object({ url: z.string(), name: z.string(), content_type: z.string() })).optional().describe("File attachments") },
     async ({ id, name, body_text, body_html, actions, attachments }) => {
       try {
-        const macroData = {};
-        if (attachments) macroData.attachments = attachments;
+        // ALWAYS fetch existing macro first — needed for name AND action preservation
+        const existing = await gorgiasClient.getMacro(id);
+        const existingData = existing.data;
+        const existingActions = existingData.actions || [];
 
-        // Gorgias API requires name even for non-name updates — auto-fetch if not provided
-        if (name) {
-          macroData.name = name;
-        } else {
-          const existing = await gorgiasClient.getMacro(id);
-          macroData.name = existing.data.name;
+        const macroData = {};
+        macroData.name = name || existingData.name;
+
+        // Preserve existing attachments if not explicitly provided
+        if (attachments) {
+          macroData.attachments = attachments;
+        } else if (existingData.attachments && existingData.attachments.length > 0) {
+          macroData.attachments = existingData.attachments;
         }
 
-        // Convert [[placeholder]] → {{placeholder}} for Gorgias template variables
-        const safeBodyText = convertPlaceholders(body_text);
-        const safeBodyHtml = convertPlaceholders(body_html);
+        // Process template text: fix variable names + convert [[var]] → {{var}}
+        const safeBodyText = processTemplateText(body_text);
+        const safeBodyHtml = processTemplateText(body_html);
 
-        let finalActions = actions || [];
-
-        // Convert placeholders inside any action arguments too
-        finalActions = finalActions.map(a => {
+        // Build new actions from input
+        let newActions = actions || [];
+        newActions = newActions.map(a => {
           if (a.arguments) {
             const converted = { ...a.arguments };
-            if (converted.body_text) converted.body_text = convertPlaceholders(converted.body_text);
-            if (converted.body_html) converted.body_html = convertPlaceholders(converted.body_html);
+            if (converted.body_text) converted.body_text = processTemplateText(converted.body_text);
+            if (converted.body_html) converted.body_html = processTemplateText(converted.body_html);
             return { ...a, arguments: converted };
           }
           return a;
         });
 
-        if ((safeBodyText || safeBodyHtml) && !finalActions.some(a => a.name === 'setResponseText')) {
+        // Auto-create setResponseText if body provided
+        if ((safeBodyText || safeBodyHtml) && !newActions.some(a => a.name === 'setResponseText')) {
           const msgArgs = {};
           if (safeBodyText) msgArgs.body_text = safeBodyText;
           if (safeBodyHtml) msgArgs.body_html = safeBodyHtml;
-          finalActions = [{ name: 'setResponseText', title: 'Set response text', type: 'user', arguments: msgArgs }, ...finalActions];
+          newActions = [{ name: 'setResponseText', title: 'Set response text', type: 'user', arguments: msgArgs }, ...newActions];
         }
-        if (finalActions.length > 0) macroData.actions = finalActions;
+
+        // INTELLIGENT MERGE: Preserve existing actions that are NOT being replaced
+        // Get the action types being updated
+        const updatedActionTypes = new Set(newActions.map(a => a.name));
+
+        // Keep existing actions whose type is NOT in the update set
+        const preservedActions = existingActions.filter(a => !updatedActionTypes.has(a.name));
+
+        // Final actions = preserved existing + new/updated
+        const finalActions = [...preservedActions, ...newActions];
+
+        if (finalActions.length > 0) {
+          macroData.actions = finalActions;
+        }
 
         await gorgiasClient.updateMacro(id, macroData);
-        return { content: [{ type: "text", text: `Macro ${id} updated (name: ${macroData.name})` }] };
+
+        // Build informative response
+        const preserved = preservedActions.map(a => a.name);
+        const updated = [...updatedActionTypes];
+        let detail = `Macro ${id} updated (name: ${macroData.name}).`;
+        if (preserved.length > 0) detail += ` Preserved existing actions: [${preserved.join(', ')}].`;
+        if (updated.length > 0) detail += ` Updated/added actions: [${updated.join(', ')}].`;
+
+        return { content: [{ type: "text", text: detail }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Update an existing macro. Name is auto-preserved if not provided. Pass body_text/body_html to replace response text. Valid action names: setResponseText, setStatus, addTags, removeTags. For Gorgias template variables, use DOUBLE SQUARE BRACKETS: [[ticket.customer.firstname]], [[ticket.customer.lastname]], [[ticket.id]], etc. The server auto-converts [[var]] to curly brace syntax." }
+    { description: "Update a macro with INTELLIGENT MERGE. Existing actions NOT being changed are PRESERVED (e.g. updating addTags will NOT remove addAttachments or setResponseText). Name and attachments are also auto-preserved. Valid actions: setResponseText, setStatus, addTags, removeTags, addAttachments. For template variables use [[ticket.customer.first_name]], [[current_agent.first_name]], [[ticket.id]]. CORRECT names: ticket.customer.first_name (NOT firstname), current_agent.first_name (NOT current_user)." }
   );
 
   server.tool(
