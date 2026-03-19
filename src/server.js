@@ -527,10 +527,15 @@ function createServer() {
               // Do nothing, keep existing exactly as-is
             } else if (existing.name === 'addTags' || existing.name === 'removeTags') {
               // MERGE: combine existing tags + new tags, deduplicate
-              const existingTags = existing.arguments?.tags || [];
-              const newTags = newAction.arguments?.tags || [];
-              const mergedTags = [...new Set([...existingTags, ...newTags])];
-              finalActions[i] = { ...existing, arguments: { ...existing.arguments, tags: mergedTags } };
+              // Gorgias tags can be: string ("tag-name"), array of strings, or array of numbers
+              const rawExisting = existing.arguments?.tags || [];
+              const rawNew = newAction.arguments?.tags || [];
+              const existingArr = Array.isArray(rawExisting) ? rawExisting : (rawExisting ? [rawExisting] : []);
+              const newArr = Array.isArray(rawNew) ? rawNew : (rawNew ? [rawNew] : []);
+              const mergedTags = [...new Set([...existingArr, ...newArr])];
+              // If original was a single string and result is still one item, keep as string
+              const finalTags = (!Array.isArray(rawExisting) && mergedTags.length === 1) ? mergedTags[0] : mergedTags;
+              finalActions[i] = { ...existing, arguments: { ...existing.arguments, tags: finalTags } };
             } else {
               // setResponseText, setStatus, etc: update content
               finalActions[i] = newAction;
