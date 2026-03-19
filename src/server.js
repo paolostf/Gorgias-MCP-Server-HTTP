@@ -443,18 +443,26 @@ function createServer() {
 
   server.tool(
     "update_macro",
-    { id: z.number().describe("Macro ID"), name: z.string().optional().describe("Macro name (auto-preserved if omitted)"), body_text: z.string().optional().describe("New response body plain text"), body_html: z.string().optional().describe("New response body HTML"), actions: z.array(z.object({ name: z.string().describe("Action name: setResponseText, setStatus, addTags, removeTags, addAttachments"), title: z.string().optional(), type: z.string().optional().default("user"), arguments: z.record(z.any()).optional() })).optional().describe("Actions to ADD or REPLACE. Existing actions of OTHER types are PRESERVED automatically. e.g. adding addTags will NOT remove existing addAttachments."), attachments: z.array(z.object({ url: z.string(), name: z.string(), content_type: z.string() })).optional().describe("File attachments") },
-    async ({ id, name, body_text, body_html, actions, attachments }) => {
+    {
+      id: z.number().describe("Macro ID"),
+      mode: z.enum(["add", "replace"]).default("add").describe("Mode: 'add' (DEFAULT, SAFE) = only adds/merges on top of existing, NEVER removes anything. 'replace' = full replacement of actions array (DANGEROUS, use only when explicitly intended)."),
+      name: z.string().optional().describe("Macro name (auto-preserved if omitted)"),
+      body_text: z.string().optional().describe("Response body plain text"),
+      body_html: z.string().optional().describe("Response body HTML"),
+      actions: z.array(z.object({ name: z.string().describe("Action name: setResponseText, setStatus, addTags, removeTags, addAttachments"), title: z.string().optional(), type: z.string().optional().default("user"), arguments: z.record(z.any()).optional() })).optional().describe("Actions to add/merge (mode=add) or full replacement (mode=replace)"),
+      attachments: z.array(z.object({ url: z.string(), name: z.string(), content_type: z.string() })).optional().describe("File attachments")
+    },
+    async ({ id, mode, name, body_text, body_html, actions, attachments }) => {
       try {
-        // ALWAYS fetch existing macro first — needed for name AND action preservation
-        const existing = await gorgiasClient.getMacro(id);
-        const existingData = existing.data;
+        // ALWAYS fetch existing macro — needed for name, actions, attachments preservation
+        const existingResp = await gorgiasClient.getMacro(id);
+        const existingData = existingResp.data;
         const existingActions = existingData.actions || [];
 
         const macroData = {};
         macroData.name = name || existingData.name;
 
-        // Preserve existing attachments if not explicitly provided
+        // Attachments: ALWAYS preserved unless explicitly provided
         if (attachments) {
           macroData.attachments = attachments;
         } else if (existingData.attachments && existingData.attachments.length > 0) {
@@ -477,7 +485,7 @@ function createServer() {
           return a;
         });
 
-        // Auto-create setResponseText if body provided
+        // Auto-create setResponseText if body_text/body_html provided
         if ((safeBodyText || safeBodyHtml) && !newActions.some(a => a.name === 'setResponseText')) {
           const msgArgs = {};
           if (safeBodyText) msgArgs.body_text = safeBodyText;
@@ -485,42 +493,57 @@ function createServer() {
           newActions = [{ name: 'setResponseText', title: 'Set response text', type: 'user', arguments: msgArgs }, ...newActions];
         }
 
-        // SAFE MERGE: Never lose existing data. Different rules per action type.
-        // - addAttachments: ALWAYS preserved from existing. NEVER replaced by update.
-        // - addTags/removeTags: MERGE arrays (existing + new, deduplicated).
-        // - setResponseText/setStatus: REPLACE (new value wins).
-        const finalActions = [];
-        const newActionsByName = {};
-        for (const a of newActions) newActionsByName[a.name] = a;
+        let finalActions;
+        let modeUsed;
 
-        // Process each existing action
-        for (const existing of existingActions) {
-          const newAction = newActionsByName[existing.name];
+        if (mode === 'replace') {
+          // ===== REPLACE MODE: Full replacement (DANGEROUS) =====
+          // Uses ONLY the new actions. Existing actions are DISCARDED.
+          // Still preserves name and top-level attachments.
+          finalActions = newActions;
+          modeUsed = 'REPLACE (full overwrite)';
+        } else {
+          // ===== ADD MODE (DEFAULT): Append-only, never removes =====
+          // Rule 1: ALL existing actions are preserved as baseline
+          // Rule 2: addAttachments — UNTOUCHABLE, never modified
+          // Rule 3: addTags/removeTags — MERGE arrays (existing + new, deduplicated)
+          // Rule 4: setResponseText/setStatus — content updated if new value provided
+          // Rule 5: New action types not in existing — APPENDED
 
-          if (existing.name === 'addAttachments') {
-            // ALWAYS keep existing addAttachments — UNTOUCHABLE
-            finalActions.push(existing);
-            delete newActionsByName[existing.name]; // prevent duplicate
-          } else if ((existing.name === 'addTags' || existing.name === 'removeTags') && newAction) {
-            // MERGE tag arrays: combine existing + new, deduplicate
-            const existingTags = existing.arguments?.tags || [];
-            const newTags = newAction.arguments?.tags || [];
-            const mergedTags = [...new Set([...existingTags, ...newTags])];
-            finalActions.push({ ...existing, arguments: { ...existing.arguments, tags: mergedTags } });
-            delete newActionsByName[existing.name]; // prevent duplicate
-          } else if (newAction) {
-            // REPLACE: setResponseText, setStatus, etc. — new value wins
-            finalActions.push(newAction);
-            delete newActionsByName[existing.name]; // prevent duplicate
-          } else {
-            // No update for this action type — preserve as-is
-            finalActions.push(existing);
+          // Start with a copy of ALL existing actions
+          finalActions = existingActions.map(a => ({ ...a }));
+
+          const newActionsByName = {};
+          for (const a of newActions) newActionsByName[a.name] = a;
+
+          // Update existing actions in-place
+          for (let i = 0; i < finalActions.length; i++) {
+            const existing = finalActions[i];
+            const newAction = newActionsByName[existing.name];
+            if (!newAction) continue; // No update for this action — keep as-is
+
+            if (existing.name === 'addAttachments') {
+              // UNTOUCHABLE — never modify, never remove
+              // Do nothing, keep existing exactly as-is
+            } else if (existing.name === 'addTags' || existing.name === 'removeTags') {
+              // MERGE: combine existing tags + new tags, deduplicate
+              const existingTags = existing.arguments?.tags || [];
+              const newTags = newAction.arguments?.tags || [];
+              const mergedTags = [...new Set([...existingTags, ...newTags])];
+              finalActions[i] = { ...existing, arguments: { ...existing.arguments, tags: mergedTags } };
+            } else {
+              // setResponseText, setStatus, etc: update content
+              finalActions[i] = newAction;
+            }
+            delete newActionsByName[existing.name]; // handled
           }
-        }
 
-        // Add any NEW action types that didn't exist before (but NOT addAttachments if already handled)
-        for (const [actionName, action] of Object.entries(newActionsByName)) {
-          finalActions.push(action);
+          // Append any truly NEW action types that didn't exist before
+          for (const [, action] of Object.entries(newActionsByName)) {
+            finalActions.push(action);
+          }
+
+          modeUsed = 'ADD (append-only, existing preserved)';
         }
 
         if (finalActions.length > 0) {
@@ -529,16 +552,18 @@ function createServer() {
 
         await gorgiasClient.updateMacro(id, macroData);
 
-        // Build informative response
-        const actionSummary = finalActions.map(a => a.name);
-        let detail = `Macro ${id} updated (name: ${macroData.name}). Final actions: [${actionSummary.join(', ')}].`;
+        // Build detailed response showing exactly what happened
+        const actionNames = finalActions.map(a => a.name);
+        const existingNames = existingActions.map(a => a.name);
+        let detail = `Macro ${id} updated [${modeUsed}] (name: ${macroData.name}).`;
+        detail += ` Actions before: [${existingNames.join(', ')}]. Actions after: [${actionNames.join(', ')}].`;
 
         return { content: [{ type: "text", text: detail }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Update a macro with SAFE MERGE. addAttachments are NEVER removed — always preserved from existing macro. addTags/removeTags are MERGED (new tags added to existing, never replacing). setResponseText/setStatus are replaced with new values. Name and top-level attachments auto-preserved. Valid actions: setResponseText, setStatus, addTags, removeTags, addAttachments. For template variables use [[ticket.customer.first_name]], [[current_agent.first_name]], [[ticket.id]]. CORRECT names: ticket.customer.first_name (NOT firstname), current_agent.first_name (NOT current_user)." }
+    { description: "Update a macro. TWO MODES: mode='add' (DEFAULT, SAFE) — only adds/merges on top of existing actions, NEVER removes anything. addAttachments are UNTOUCHABLE. addTags are MERGED (combined, never replaced). setResponseText content is updated. mode='replace' — DANGEROUS full replacement, only use when explicitly intended. Name and attachments always auto-preserved. For template variables: [[ticket.customer.first_name]], [[current_agent.first_name]], [[ticket.id]]." }
   );
 
   server.tool(
