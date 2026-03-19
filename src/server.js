@@ -853,11 +853,11 @@ function createServer() {
     { description: "List all integrations" }
   );
 
-  // ===== CUSTOM FIELD TOOLS =====
+  // ===== CUSTOM FIELD DEFINITION TOOLS =====
 
   server.tool(
     "list_custom_fields",
-    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
+    { object_type: z.enum(["Ticket", "Customer"]).describe("Entity type: 'Ticket' or 'Customer'"), limit: z.number().min(1).max(100).default(30).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
     async (params) => {
       try {
         const response = await gorgiasClient.listCustomFields(params);
@@ -866,7 +866,174 @@ function createServer() {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "List all custom fields" }
+    { description: "List all custom field definitions. MUST specify object_type: 'Ticket' for ticket fields (contact reason, etc) or 'Customer' for customer fields." }
+  );
+
+  server.tool(
+    "get_custom_field",
+    { id: z.number().describe("Custom field ID") },
+    async ({ id }) => {
+      try {
+        const response = await gorgiasClient.getCustomField(id);
+        return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "Get a custom field definition by ID — shows label, type, choices, required status, etc." }
+  );
+
+  server.tool(
+    "create_custom_field",
+    { label: z.string().describe("Field label/name (e.g. 'Contact Reason', 'Defective Item')"), object_type: z.enum(["Ticket", "Customer"]).describe("Entity type: 'Ticket' or 'Customer'"), definition: z.record(z.any()).optional().describe("Field definition with type and settings. E.g. {type: 'dropdown', choices: [{label: 'Size Issue'}, {label: 'Defective'}], default: 'Size Issue'}"), input_settings: z.record(z.any()).optional().describe("Input settings (e.g. {placeholder: 'Select reason'})"), required: z.boolean().optional().describe("Whether this field is required"), priority: z.number().optional().describe("Display order (lower = first)"), description: z.string().optional().describe("Field description") },
+    async ({ label, object_type, definition, input_settings, required, priority, description }) => {
+      try {
+        const data = { label, object_type };
+        if (definition) data.definition = definition;
+        if (input_settings) data.input_settings = input_settings;
+        if (required !== undefined) data.required = required;
+        if (priority !== undefined) data.priority = priority;
+        if (description) data.description = description;
+        const response = await gorgiasClient.createCustomField(data);
+        return { content: [{ type: "text", text: `Custom field created: ${response.data.label} (ID: ${response.data.id}, type: ${object_type})` }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "Create a new custom field definition. Use object_type='Ticket' for ticket fields like contact reasons. For dropdown fields, pass definition: {type: 'dropdown', choices: [{label: 'Option 1'}, {label: 'Option 2'}]}." }
+  );
+
+  server.tool(
+    "update_custom_field",
+    { id: z.number().describe("Custom field ID"), label: z.string().optional().describe("New label"), definition: z.record(z.any()).optional().describe("Updated field definition (type, choices, default)"), input_settings: z.record(z.any()).optional().describe("Updated input settings"), required: z.boolean().optional().describe("Required status"), priority: z.number().optional().describe("Display order"), description: z.string().optional().describe("Description") },
+    async ({ id, ...data }) => {
+      try {
+        const cleanData = Object.fromEntries(Object.entries(data).filter(([_, v]) => v !== undefined));
+        await gorgiasClient.updateCustomField(id, cleanData);
+        return { content: [{ type: "text", text: `Custom field ${id} updated` }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "Update a custom field definition (label, choices, required status, etc)." }
+  );
+
+  server.tool(
+    "delete_custom_field",
+    { id: z.number().describe("Custom field ID") },
+    async ({ id }) => {
+      try {
+        await gorgiasClient.deleteCustomField(id);
+        return { content: [{ type: "text", text: `Custom field ${id} deleted` }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "Delete a custom field definition (CAUTION: irreversible, removes field from all tickets/customers)" }
+  );
+
+  // ===== TICKET CUSTOM FIELD VALUE TOOLS =====
+
+  server.tool(
+    "list_ticket_custom_field_values",
+    { ticket_id: z.number().describe("Ticket ID") },
+    async ({ ticket_id }) => {
+      try {
+        const response = await gorgiasClient.listTicketCustomFieldValues(ticket_id);
+        return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "List all custom field values set on a specific ticket (contact reason, etc)." }
+  );
+
+  server.tool(
+    "update_ticket_custom_field_values",
+    { ticket_id: z.number().describe("Ticket ID"), values: z.array(z.object({ field_id: z.number().describe("Custom field ID"), value: z.any().describe("Field value (string for text/dropdown, boolean for checkbox, number for number)") })).describe("Array of {field_id, value} pairs to set") },
+    async ({ ticket_id, values }) => {
+      try {
+        await gorgiasClient.updateTicketCustomFieldValues(ticket_id, values);
+        return { content: [{ type: "text", text: `Ticket ${ticket_id} custom fields updated (${values.length} fields)` }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "Set custom field values on a ticket. Pass array of {field_id, value}. Use list_custom_fields(object_type='Ticket') first to get field IDs." }
+  );
+
+  server.tool(
+    "delete_ticket_custom_field_value",
+    { ticket_id: z.number().describe("Ticket ID"), field_id: z.number().describe("Custom field ID to clear") },
+    async ({ ticket_id, field_id }) => {
+      try {
+        await gorgiasClient.deleteTicketCustomFieldValue(ticket_id, field_id);
+        return { content: [{ type: "text", text: `Custom field ${field_id} cleared from ticket ${ticket_id}` }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "Clear/remove a custom field value from a ticket." }
+  );
+
+  // ===== CUSTOMER CUSTOM FIELD VALUE TOOLS =====
+
+  server.tool(
+    "list_customer_custom_field_values",
+    { customer_id: z.number().describe("Customer ID") },
+    async ({ customer_id }) => {
+      try {
+        const response = await gorgiasClient.listCustomerCustomFieldValues(customer_id);
+        return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "List all custom field values for a customer." }
+  );
+
+  server.tool(
+    "update_customer_custom_field_value",
+    { customer_id: z.number().describe("Customer ID"), field_id: z.number().describe("Custom field ID"), value: z.any().describe("Field value") },
+    async ({ customer_id, field_id, value }) => {
+      try {
+        await gorgiasClient.updateCustomerCustomFieldValue(customer_id, field_id, { value });
+        return { content: [{ type: "text", text: `Customer ${customer_id} custom field ${field_id} updated` }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "Set a custom field value on a customer." }
+  );
+
+  server.tool(
+    "delete_customer_custom_field_value",
+    { customer_id: z.number().describe("Customer ID"), field_id: z.number().describe("Custom field ID to clear") },
+    async ({ customer_id, field_id }) => {
+      try {
+        await gorgiasClient.deleteCustomerCustomFieldValue(customer_id, field_id);
+        return { content: [{ type: "text", text: `Custom field ${field_id} cleared from customer ${customer_id}` }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "Clear/remove a custom field value from a customer." }
+  );
+
+  // ===== CUSTOM FIELD CONDITIONS =====
+
+  server.tool(
+    "list_custom_field_conditions",
+    { limit: z.number().min(1).max(100).default(30).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
+    async (params) => {
+      try {
+        const response = await gorgiasClient.listCustomFieldConditions(params);
+        return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+    { description: "List all custom field conditions (visibility rules, dependencies between fields). Read-only — conditions are managed in Gorgias UI." }
   );
 
   // ===== ACCOUNT TOOLS =====
