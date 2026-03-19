@@ -929,7 +929,7 @@ function createServer() {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Delete a custom field definition (CAUTION: irreversible, removes field from all tickets/customers)" }
+    { description: "Delete a custom field definition. NOTE: Gorgias may return 405 — custom field deletion is not always supported via API. If blocked, rename the field to '[DELETE ME]' and report for manual deletion." }
   );
 
   // ===== TICKET CUSTOM FIELD VALUE TOOLS =====
@@ -1024,7 +1024,7 @@ function createServer() {
 
   server.tool(
     "list_custom_field_conditions",
-    { limit: z.number().min(1).max(100).default(30).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
+    { object_type: z.enum(["Ticket", "Customer"]).describe("Entity type: 'Ticket' or 'Customer'"), limit: z.number().min(1).max(100).default(30).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
     async (params) => {
       try {
         const response = await gorgiasClient.listCustomFieldConditions(params);
