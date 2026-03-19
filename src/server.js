@@ -485,15 +485,43 @@ function createServer() {
           newActions = [{ name: 'setResponseText', title: 'Set response text', type: 'user', arguments: msgArgs }, ...newActions];
         }
 
-        // INTELLIGENT MERGE: Preserve existing actions that are NOT being replaced
-        // Get the action types being updated
-        const updatedActionTypes = new Set(newActions.map(a => a.name));
+        // SAFE MERGE: Never lose existing data. Different rules per action type.
+        // - addAttachments: ALWAYS preserved from existing. NEVER replaced by update.
+        // - addTags/removeTags: MERGE arrays (existing + new, deduplicated).
+        // - setResponseText/setStatus: REPLACE (new value wins).
+        const finalActions = [];
+        const newActionsByName = {};
+        for (const a of newActions) newActionsByName[a.name] = a;
 
-        // Keep existing actions whose type is NOT in the update set
-        const preservedActions = existingActions.filter(a => !updatedActionTypes.has(a.name));
+        // Process each existing action
+        for (const existing of existingActions) {
+          const newAction = newActionsByName[existing.name];
 
-        // Final actions = preserved existing + new/updated
-        const finalActions = [...preservedActions, ...newActions];
+          if (existing.name === 'addAttachments') {
+            // ALWAYS keep existing addAttachments — UNTOUCHABLE
+            finalActions.push(existing);
+            delete newActionsByName[existing.name]; // prevent duplicate
+          } else if ((existing.name === 'addTags' || existing.name === 'removeTags') && newAction) {
+            // MERGE tag arrays: combine existing + new, deduplicate
+            const existingTags = existing.arguments?.tags || [];
+            const newTags = newAction.arguments?.tags || [];
+            const mergedTags = [...new Set([...existingTags, ...newTags])];
+            finalActions.push({ ...existing, arguments: { ...existing.arguments, tags: mergedTags } });
+            delete newActionsByName[existing.name]; // prevent duplicate
+          } else if (newAction) {
+            // REPLACE: setResponseText, setStatus, etc. — new value wins
+            finalActions.push(newAction);
+            delete newActionsByName[existing.name]; // prevent duplicate
+          } else {
+            // No update for this action type — preserve as-is
+            finalActions.push(existing);
+          }
+        }
+
+        // Add any NEW action types that didn't exist before (but NOT addAttachments if already handled)
+        for (const [actionName, action] of Object.entries(newActionsByName)) {
+          finalActions.push(action);
+        }
 
         if (finalActions.length > 0) {
           macroData.actions = finalActions;
@@ -502,18 +530,15 @@ function createServer() {
         await gorgiasClient.updateMacro(id, macroData);
 
         // Build informative response
-        const preserved = preservedActions.map(a => a.name);
-        const updated = [...updatedActionTypes];
-        let detail = `Macro ${id} updated (name: ${macroData.name}).`;
-        if (preserved.length > 0) detail += ` Preserved existing actions: [${preserved.join(', ')}].`;
-        if (updated.length > 0) detail += ` Updated/added actions: [${updated.join(', ')}].`;
+        const actionSummary = finalActions.map(a => a.name);
+        let detail = `Macro ${id} updated (name: ${macroData.name}). Final actions: [${actionSummary.join(', ')}].`;
 
         return { content: [{ type: "text", text: detail }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Update a macro with INTELLIGENT MERGE. Existing actions NOT being changed are PRESERVED (e.g. updating addTags will NOT remove addAttachments or setResponseText). Name and attachments are also auto-preserved. Valid actions: setResponseText, setStatus, addTags, removeTags, addAttachments. For template variables use [[ticket.customer.first_name]], [[current_agent.first_name]], [[ticket.id]]. CORRECT names: ticket.customer.first_name (NOT firstname), current_agent.first_name (NOT current_user)." }
+    { description: "Update a macro with SAFE MERGE. addAttachments are NEVER removed — always preserved from existing macro. addTags/removeTags are MERGED (new tags added to existing, never replacing). setResponseText/setStatus are replaced with new values. Name and top-level attachments auto-preserved. Valid actions: setResponseText, setStatus, addTags, removeTags, addAttachments. For template variables use [[ticket.customer.first_name]], [[current_agent.first_name]], [[ticket.id]]. CORRECT names: ticket.customer.first_name (NOT firstname), current_agent.first_name (NOT current_user)." }
   );
 
   server.tool(
