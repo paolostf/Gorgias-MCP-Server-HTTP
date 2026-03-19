@@ -1,60 +1,50 @@
-import axios from 'axios';
-
 class GorgiasClient {
   constructor() {
-    this.baseURL = null;
-    this.auth = null;
+    this.initialized = false;
   }
 
-  initialize() {
-    if (this.baseURL) return;
+  async initialize() {
+    if (this.initialized) return;
 
-    const domain = process.env.GORGIAS_DOMAIN;
-    if (!domain) {
-      throw new Error('GORGIAS_DOMAIN environment variable is required');
+    this.domain = process.env.GORGIAS_DOMAIN;
+    this.username = process.env.GORGIAS_USERNAME;
+    this.apiKey = process.env.GORGIAS_API_KEY;
+
+    if (!this.domain || !this.username || !this.apiKey) {
+      throw new Error('GORGIAS_DOMAIN, GORGIAS_USERNAME, and GORGIAS_API_KEY environment variables are required');
     }
 
-    this.baseURL = `https://${domain}/api`;
-
-    if (process.env.GORGIAS_USERNAME && process.env.GORGIAS_API_KEY) {
-      this.auth = {
-        username: process.env.GORGIAS_USERNAME,
-        password: process.env.GORGIAS_API_KEY
-      };
-    } else if (process.env.GORGIAS_ACCESS_TOKEN) {
-      this.auth = null;
-      this.accessToken = process.env.GORGIAS_ACCESS_TOKEN;
-    } else {
-      throw new Error('Either GORGIAS_USERNAME and GORGIAS_API_KEY, or GORGIAS_ACCESS_TOKEN must be provided');
-    }
+    this.baseUrl = `https://${this.domain}/api`;
+    this.authHeader = 'Basic ' + Buffer.from(`${this.username}:${this.apiKey}`).toString('base64');
+    this.initialized = true;
   }
 
   async request(method, endpoint, data = null, params = null) {
-    this.initialize();
+    await this.initialize();
 
-    const config = {
+    let url = `${this.baseUrl}/${endpoint}`;
+    const options = {
       method,
-      url: `${this.baseURL}/${endpoint}`,
-      headers: { 'Content-Type': 'application/json' }
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': this.authHeader,
+      },
     };
 
-    if (this.auth) {
-      config.auth = this.auth;
-    } else if (this.accessToken) {
-      config.headers['Authorization'] = `Bearer ${this.accessToken}`;
-    }
-
-    if (data) config.data = data;
-    if (params) config.params = params;
-
-    try {
-      return await axios(config);
-    } catch (error) {
-      if (error.response) {
-        throw new Error(`Gorgias API error: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
+    if (data) options.body = JSON.stringify(data);
+    if (params) {
+      const filteredParams = Object.entries(params).filter(([_, v]) => v != null);
+      if (filteredParams.length > 0) {
+        url += '?' + new URLSearchParams(filteredParams).toString();
       }
-      throw error;
     }
+
+    const response = await fetch(url, options);
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Gorgias API error: ${response.status} - ${errorBody}`);
+    }
+    return { data: await response.json(), status: response.status };
   }
 
   // ===== TICKETS =====
@@ -81,19 +71,19 @@ class GorgiasClient {
   async listTags(params = {}) { return this.request('GET', 'tags', null, params); }
   async createTag(data) { return this.request('POST', 'tags', data); }
   async addTagToTicket(ticketId, tagId) {
-    // Gorgias requires updating the full tags array on the ticket
-    const ticket = await this.request('GET', `tickets/${ticketId}`);
-    const existingTags = (ticket.data.tags || []).map(t => ({ id: t.id }));
-    // Don't add if already present
-    if (!existingTags.find(t => t.id === tagId)) {
-      existingTags.push({ id: tagId });
+    const ticketResp = await this.getTicket(ticketId);
+    const currentTags = ticketResp.data.tags || [];
+    const tagIds = currentTags.map(t => ({ id: t.id }));
+    if (!tagIds.some(t => t.id === tagId)) {
+      tagIds.push({ id: tagId });
     }
-    return this.request('PUT', `tickets/${ticketId}`, { tags: existingTags });
+    return this.request('PUT', `tickets/${ticketId}`, { tags: tagIds });
   }
   async removeTagFromTicket(ticketId, tagId) {
-    const ticket = await this.request('GET', `tickets/${ticketId}`);
-    const filteredTags = (ticket.data.tags || []).filter(t => t.id !== tagId).map(t => ({ id: t.id }));
-    return this.request('PUT', `tickets/${ticketId}`, { tags: filteredTags });
+    const ticketResp = await this.getTicket(ticketId);
+    const currentTags = ticketResp.data.tags || [];
+    const tagIds = currentTags.filter(t => t.id !== tagId).map(t => ({ id: t.id }));
+    return this.request('PUT', `tickets/${ticketId}`, { tags: tagIds });
   }
 
   // ===== MACROS =====
@@ -106,37 +96,34 @@ class GorgiasClient {
   // ===== SATISFACTION SURVEYS =====
   async listSatisfactionSurveys(params = {}) { return this.request('GET', 'satisfaction-surveys', null, params); }
 
-  // ===== USERS/AGENTS =====
+  // ===== USERS =====
   async listUsers(params = {}) { return this.request('GET', 'users', null, params); }
   async getUser(id) { return this.request('GET', `users/${id}`); }
 
   // ===== RULES =====
   async listRules(params = {}) { return this.request('GET', 'rules', null, params); }
   async getRule(id) { return this.request('GET', `rules/${id}`); }
+  async createRule(data) { return this.request('POST', 'rules', data); }
+  async updateRule(id, data) { return this.request('PUT', `rules/${id}`, data); }
+  async deleteRule(id) { return this.request('DELETE', `rules/${id}`); }
 
   // ===== VIEWS =====
   async listViews(params = {}) { return this.request('GET', 'views', null, params); }
   async getView(id) { return this.request('GET', `views/${id}`); }
   async getViewTickets(id, params = {}) { return this.request('GET', `views/${id}/items`, null, params); }
 
-  // ===== TICKET MERGE =====
-  async mergeTickets(mainTicketId, ticketIds) {
-    return this.request('POST', 'tickets/merge', { main_ticket_id: mainTicketId, ticket_ids: ticketIds });
-  }
-
   // ===== SNOOZE =====
   async snoozeTicket(id, snoozeDatetime) {
     return this.request('PUT', `tickets/${id}`, { snooze_datetime: snoozeDatetime });
   }
-
   async unsnoozeTicket(id) {
     return this.request('PUT', `tickets/${id}`, { snooze_datetime: null });
   }
 
-  // ===== RULES (CRUD) =====
-  async createRule(data) { return this.request('POST', 'rules', data); }
-  async updateRule(id, data) { return this.request('PUT', `rules/${id}`, data); }
-  async deleteRule(id) { return this.request('DELETE', `rules/${id}`); }
+  // ===== MERGE =====
+  async mergeTickets(mainTicketId, ticketIds) {
+    return this.request('POST', `tickets/${mainTicketId}/merge`, { ticket_ids: ticketIds });
+  }
 
   // ===== EVENTS =====
   async listEvents(params = {}) { return this.request('GET', 'events', null, params); }
@@ -144,8 +131,26 @@ class GorgiasClient {
   // ===== INTEGRATIONS =====
   async listIntegrations(params = {}) { return this.request('GET', 'integrations', null, params); }
 
-  // ===== CUSTOM FIELDS =====
+  // ===== CUSTOM FIELDS (definitions) =====
   async listCustomFields(params = {}) { return this.request('GET', 'custom-fields', null, params); }
+  async getCustomField(id) { return this.request('GET', `custom-fields/${id}`); }
+  async createCustomField(data) { return this.request('POST', 'custom-fields', data); }
+  async updateCustomField(id, data) { return this.request('PUT', `custom-fields/${id}`, data); }
+  async deleteCustomField(id) { return this.request('DELETE', `custom-fields/${id}`); }
+
+  // ===== TICKET CUSTOM FIELD VALUES =====
+  async listTicketCustomFieldValues(ticketId) { return this.request('GET', `tickets/${ticketId}/custom-fields`); }
+  async updateTicketCustomFieldValues(ticketId, data) { return this.request('PUT', `tickets/${ticketId}/custom-fields`, data); }
+  async updateTicketCustomFieldValue(ticketId, fieldId, data) { return this.request('PUT', `tickets/${ticketId}/custom-fields/${fieldId}`, data); }
+  async deleteTicketCustomFieldValue(ticketId, fieldId) { return this.request('DELETE', `tickets/${ticketId}/custom-fields/${fieldId}`); }
+
+  // ===== CUSTOMER CUSTOM FIELD VALUES =====
+  async listCustomerCustomFieldValues(customerId) { return this.request('GET', `customers/${customerId}/custom-fields`); }
+  async updateCustomerCustomFieldValue(customerId, fieldId, data) { return this.request('PUT', `customers/${customerId}/custom-fields/${fieldId}`, data); }
+  async deleteCustomerCustomFieldValue(customerId, fieldId) { return this.request('DELETE', `customers/${customerId}/custom-fields/${fieldId}`); }
+
+  // ===== CUSTOM FIELD CONDITIONS =====
+  async listCustomFieldConditions(params = {}) { return this.request('GET', 'custom-field-conditions', null, params); }
 
   // ===== ACCOUNT =====
   async getAccount() { return this.request('GET', 'account'); }
