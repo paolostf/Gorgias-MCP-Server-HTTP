@@ -527,14 +527,18 @@ function createServer() {
               // Do nothing, keep existing exactly as-is
             } else if (existing.name === 'addTags' || existing.name === 'removeTags') {
               // MERGE: combine existing tags + new tags, deduplicate
-              // Gorgias tags can be: string ("tag-name"), array of strings, or array of numbers
-              const rawExisting = existing.arguments?.tags || [];
-              const rawNew = newAction.arguments?.tags || [];
-              const existingArr = Array.isArray(rawExisting) ? rawExisting : (rawExisting ? [rawExisting] : []);
-              const newArr = Array.isArray(rawNew) ? rawNew : (rawNew ? [rawNew] : []);
-              const mergedTags = [...new Set([...existingArr, ...newArr])];
-              // If original was a single string and result is still one item, keep as string
-              const finalTags = (!Array.isArray(rawExisting) && mergedTags.length === 1) ? mergedTags[0] : mergedTags;
+              // Gorgias stores tags as COMMA-SEPARATED STRING (e.g. "tag1,tag2") or single string "tag1"
+              const rawExisting = existing.arguments?.tags || '';
+              const rawNew = newAction.arguments?.tags || '';
+              // Normalize both to arrays of strings
+              const toArr = (v) => {
+                if (Array.isArray(v)) return v.map(String);
+                if (typeof v === 'string' && v) return v.split(',').map(s => s.trim()).filter(Boolean);
+                return [];
+              };
+              const merged = [...new Set([...toArr(rawExisting), ...toArr(rawNew)])];
+              // Gorgias expects comma-separated string for tags in macro actions
+              const finalTags = merged.join(',');
               finalActions[i] = { ...existing, arguments: { ...existing.arguments, tags: finalTags } };
             } else {
               // setResponseText, setStatus, etc: update content
