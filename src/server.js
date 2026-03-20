@@ -10,20 +10,22 @@ function convertPlaceholders(text) {
   return text.replace(/\[\[([^\]]+)\]\]/g, '{{$1}}');
 }
 
-// Auto-correct common wrong Gorgias variable names to the correct ones.
-// The agent frequently uses wrong variable names (e.g. firstname vs first_name).
+// Auto-correct variable names to the format Gorgias ACTUALLY recognizes.
+// Gorgias uses: ticket.customer.firstname (NO underscore), current_user.firstname (NOT current_agent).
+// Verified from working macros with 9000+ usages (R1, E3A, T6).
 const VARIABLE_CORRECTIONS = {
-  'ticket.customer.firstname': 'ticket.customer.first_name',
-  'ticket.customer.lastname': 'ticket.customer.last_name',
-  'ticket.customer.fullname': 'ticket.customer.full_name',
-  'current_user.firstname': 'current_agent.first_name',
-  'current_user.lastname': 'current_agent.last_name',
-  'current_user.first_name': 'current_agent.first_name',
-  'current_user.last_name': 'current_agent.last_name',
-  'current_user.name': 'current_agent.first_name',
-  'ticket.assignee_name': 'current_agent.first_name',
-  'ticket.assignee_user.name': 'current_agent.first_name',
-  'ticket.assignee_user.firstname': 'current_agent.first_name',
+  'ticket.customer.first_name': 'ticket.customer.firstname',
+  'ticket.customer.last_name': 'ticket.customer.lastname',
+  'ticket.customer.full_name': 'ticket.customer.fullname',
+  'current_agent.first_name': 'current_user.firstname',
+  'current_agent.last_name': 'current_user.lastname',
+  'current_agent.firstname': 'current_user.firstname',
+  'current_agent.lastname': 'current_user.lastname',
+  'current_agent.name': 'current_user.firstname',
+  'ticket.assignee_name': 'current_user.firstname',
+  'ticket.assignee_user.name': 'current_user.firstname',
+  'ticket.assignee_user.firstname': 'current_user.firstname',
+  'ticket.customer.name': 'ticket.customer.firstname',
 };
 
 function fixVariableNames(text) {
@@ -438,7 +440,7 @@ function createServer() {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Create a new macro. CHECKS FOR DUPLICATES — will block if name already exists. Pass body_text/body_html for auto response text, or full actions array. Valid actions: setResponseText, setStatus, addTags, removeTags, addAttachments. For template variables use DOUBLE SQUARE BRACKETS: [[ticket.customer.first_name]], [[current_agent.first_name]], [[ticket.id]]. CORRECT variable names: ticket.customer.first_name (NOT firstname), ticket.customer.last_name, current_agent.first_name (NOT current_user), ticket.id, ticket.subject." }
+    { description: "Create a new macro. CHECKS FOR DUPLICATES — will block if name already exists. Pass body_text/body_html for auto response text, or full actions array. Valid actions: setResponseText, setStatus, addTags, removeTags, addAttachments. For template variables use DOUBLE SQUARE BRACKETS: [[ticket.customer.firstname]], [[current_user.firstname]], [[ticket.id]]. CORRECT Gorgias variable names (NO underscores): ticket.customer.firstname, ticket.customer.lastname, current_user.firstname, ticket.id, ticket.subject. Server auto-corrects wrong names." }
   );
 
   server.tool(
@@ -572,7 +574,7 @@ function createServer() {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Update a macro. TWO MODES: mode='add' (DEFAULT, SAFE) — only adds/merges on top of existing actions, NEVER removes anything. addAttachments are UNTOUCHABLE. addTags are MERGED (combined, never replaced). setResponseText content is updated. mode='replace' — DANGEROUS full replacement, only use when explicitly intended. Name and attachments always auto-preserved. For template variables: [[ticket.customer.first_name]], [[current_agent.first_name]], [[ticket.id]]." }
+    { description: "Update a macro. TWO MODES: mode='add' (DEFAULT, SAFE) — only adds/merges on top of existing actions, NEVER removes anything. addAttachments are UNTOUCHABLE. addTags are MERGED (combined, never replaced). setResponseText content is updated. mode='replace' — DANGEROUS full replacement, only use when explicitly intended. Name and attachments always auto-preserved. For template variables use [[ticket.customer.firstname]], [[current_user.firstname]], [[ticket.id]]. NO underscores in variable names." }
   );
 
   server.tool(
