@@ -44,6 +44,24 @@ function processTemplateText(text) {
   return convertPlaceholders(fixVariableNames(text));
 }
 
+// Generic auto-pagination helper for list endpoints
+async function fetchAllPages(apiMethod, params = {}, maxPages = 50) {
+  let allItems = [];
+  let nextCursor = undefined;
+  let page = 0;
+  do {
+    const p = { ...params, limit: 100 };
+    if (nextCursor) p.cursor = nextCursor;
+    const response = await apiMethod(p);
+    const data = response.data;
+    const items = data?.data || (Array.isArray(data) ? data : []);
+    allItems = allItems.concat(items);
+    nextCursor = data?.meta?.next_cursor || null;
+    page++;
+  } while (nextCursor && page < maxPages);
+  return { items: allItems, pages: page };
+}
+
 function createServer() {
   const server = new McpServer({
     name: "Gorgias API",
@@ -55,16 +73,45 @@ function createServer() {
 
   server.tool(
     "list_tickets",
-    { limit: z.number().min(1).max(100).default(10).describe("Number of tickets per page"), cursor: z.string().optional().describe("Pagination cursor from previous response"), order_by: z.string().optional().describe("Field to order by (e.g. created_datetime)"), order_dir: z.enum(["asc", "desc"]).optional().describe("Order direction"), status: z.string().optional().describe("Filter by status (open, closed)"), assignee_user_id: z.number().optional().describe("Filter by assignee user ID"), customer_id: z.number().optional().describe("Filter by customer ID"), channel: z.string().optional().describe("Filter by channel"), tag_id: z.number().optional().describe("Filter by tag ID") },
-    async (params) => {
+    {
+      fetch_all: z.boolean().default(false).describe("true = auto-paginate ALL matching tickets. false (DEFAULT) = single page."),
+      limit: z.number().min(1).max(100).default(20).describe("Results per page"),
+      cursor: z.string().optional().describe("Pagination cursor (only when fetch_all=false)"),
+      order_by: z.string().optional().describe("Field to order by (e.g. created_datetime)"),
+      order_dir: z.enum(["asc", "desc"]).optional().describe("Order direction"),
+      customer_id: z.number().optional().describe("Filter by customer ID"),
+      assignee_user_id: z.number().optional().describe("Filter by assignee user ID"),
+      channel: z.string().optional().describe("Filter by channel")
+    },
+    async ({ fetch_all, limit, cursor, ...filters }) => {
       try {
-        const response = await gorgiasClient.listTickets(params);
-        return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
+        if (fetch_all) {
+          let allTickets = [];
+          let nextCursor = undefined;
+          let page = 0;
+          const maxPages = 50;
+          do {
+            const params = { limit: 100, ...filters };
+            if (nextCursor) params.cursor = nextCursor;
+            const response = await gorgiasClient.listTickets(params);
+            const data = response.data;
+            const tickets = data?.data || data || [];
+            allTickets = allTickets.concat(tickets);
+            nextCursor = data?.meta?.next_cursor || null;
+            page++;
+          } while (nextCursor && page < maxPages);
+          return { content: [{ type: "text", text: `${allTickets.length} tickets found (${page} pages)\n\n${JSON.stringify(allTickets, null, 2)}` }] };
+        } else {
+          const params = { limit, ...filters };
+          if (cursor) params.cursor = cursor;
+          const response = await gorgiasClient.listTickets(params);
+          return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
+        }
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "List tickets from Gorgias with optional filters. Use cursor from previous response for pagination." }
+    { description: "List tickets with optional filters. Set fetch_all=true to auto-paginate ALL results. NOTE: For ticket discovery, prefer get_view_tickets with view IDs (faster, more reliable). list_tickets does NOT support tag_id or status filters." }
   );
 
   server.tool(
@@ -125,38 +172,176 @@ function createServer() {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Delete a ticket" }
+    { description: "⚠️ DANGER: Permanently delete a ticket. IRREVERSIBLE — all messages, notes, and history are lost forever. Consider closing the ticket instead." }
   );
 
   server.tool(
     "search_tickets",
-    { query: z.string().describe("Search query"), limit: z.number().min(1).max(100).default(10).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
-    async (params) => {
+    {
+      query: z.string().describe("Search query"),
+      fetch_all: z.boolean().default(false).describe("true = auto-paginate all results. false (DEFAULT) = single page."),
+      limit: z.number().min(1).max(100).default(20).describe("Results per page"),
+      cursor: z.string().optional().describe("Pagination cursor (only when fetch_all=false)")
+    },
+    async ({ query, fetch_all, limit, cursor }) => {
       try {
-        const { query, ...rest } = params;
-        const response = await gorgiasClient.searchTickets(query, rest);
-        return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
+        if (fetch_all) {
+          let allTickets = [];
+          let nextCursor = undefined;
+          let page = 0;
+          const maxPages = 20;
+          do {
+            const params = { limit: 100 };
+            if (nextCursor) params.cursor = nextCursor;
+            const response = await gorgiasClient.searchTickets(query, params);
+            const data = response.data;
+            const tickets = data?.data || data || [];
+            allTickets = allTickets.concat(tickets);
+            nextCursor = data?.meta?.next_cursor || null;
+            page++;
+          } while (nextCursor && page < maxPages);
+          return { content: [{ type: "text", text: `Search "${query}": ${allTickets.length} total results\n\n${JSON.stringify(allTickets, null, 2)}` }] };
+        } else {
+          const params = { limit };
+          if (cursor) params.cursor = cursor;
+          const response = await gorgiasClient.searchTickets(query, params);
+          return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
+        }
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Search tickets by query string" }
+    { description: "Search tickets by query string. Set fetch_all=true to get all matching results with auto-pagination." }
   );
 
   // ===== MESSAGE TOOLS =====
 
   server.tool(
     "list_messages",
-    { ticket_id: z.number().describe("Ticket ID"), limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
-    async ({ ticket_id, ...params }) => {
+    {
+      ticket_id: z.number().describe("Ticket ID"),
+      fetch_all: z.boolean().default(true).describe("true (DEFAULT) = auto-paginate and return ALL messages. false = return single page only."),
+      limit: z.number().min(1).max(100).default(30).describe("Results per page (used during pagination)"),
+      cursor: z.string().optional().describe("Pagination cursor (only used when fetch_all=false)")
+    },
+    async ({ ticket_id, fetch_all, limit, cursor }) => {
       try {
-        const response = await gorgiasClient.listMessages(ticket_id, params);
-        return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
+        let allMessages = [];
+
+        if (fetch_all) {
+          // AUTO-PAGINATE: fetch every message in the ticket
+          let nextCursor = undefined;
+          let page = 0;
+          const maxPages = 20; // Safety: max 2000 messages
+          do {
+            const params = { limit: 100 }; // Max per page for speed
+            if (nextCursor) params.cursor = nextCursor;
+            const response = await gorgiasClient.listMessages(ticket_id, params);
+            const data = response.data;
+            const messages = data?.data || data || [];
+            allMessages = allMessages.concat(messages);
+            nextCursor = data?.meta?.next_cursor || null;
+            page++;
+          } while (nextCursor && page < maxPages);
+        } else {
+          // Single page mode
+          const params = { limit };
+          if (cursor) params.cursor = cursor;
+          const response = await gorgiasClient.listMessages(ticket_id, params);
+          const data = response.data;
+          allMessages = data?.data || data || [];
+          // Include pagination info for manual cursor use
+          const meta = data?.meta;
+          if (meta?.next_cursor) {
+            allMessages._nextCursor = meta.next_cursor;
+          }
+        }
+
+        // FORMAT: structured, readable output — same view as human agents
+        const formatted = allMessages.map(msg => {
+          const sender = msg.sender || {};
+          const senderName = sender.firstname || sender.name || sender.email || 'Unknown';
+          const senderEmail = sender.email || msg.from_agent ? '(agent)' : '(customer)';
+          const channel = msg.channel || 'unknown';
+          const isNote = channel === 'internal-note';
+          const isChat = channel === 'chat';
+          const isEmail = channel === 'email';
+          const date = msg.created_datetime || msg.sent_datetime || '';
+          const formattedDate = date ? new Date(date).toISOString().replace('T', ' ').slice(0, 19) + ' UTC' : 'no date';
+          const fromAgent = msg.from_agent === true;
+
+          // Channel label
+          let channelLabel = isNote ? '📝 INTERNAL NOTE' : isChat ? '💬 CHAT' : isEmail ? '📧 EMAIL' : `📨 ${channel.toUpperCase()}`;
+          let roleLabel = fromAgent ? '🤖 AGENT' : '👤 CUSTOMER';
+          if (isNote) roleLabel = '📝 NOTE';
+
+          // Body: prefer text, fall back to stripped HTML
+          let body = msg.body_text || '';
+          if (!body && msg.body_html) {
+            body = msg.body_html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+          }
+          if (body.length > 2000) body = body.substring(0, 2000) + '... [truncated]';
+
+          // Attachments
+          const attachments = msg.attachments || [];
+          const attachStr = attachments.length > 0
+            ? `\n   📎 Attachments: ${attachments.map(a => a.name || a.url).join(', ')}`
+            : '';
+
+          return `[${formattedDate}] ${channelLabel} | ${roleLabel} — ${senderName} <${senderEmail}>\n${body}${attachStr}`;
+        });
+
+        // Sort chronologically (oldest first)
+        const sortedMessages = [...allMessages].sort((a, b) => {
+          const dateA = new Date(a.created_datetime || a.sent_datetime || 0);
+          const dateB = new Date(b.created_datetime || b.sent_datetime || 0);
+          return dateA - dateB;
+        });
+
+        const formattedSorted = sortedMessages.map(msg => {
+          const sender = msg.sender || {};
+          const senderName = sender.firstname || sender.name || sender.email || 'Unknown';
+          const senderEmail = sender.email || (msg.from_agent ? 'agent' : 'customer');
+          const channel = msg.channel || 'unknown';
+          const isNote = channel === 'internal-note';
+          const isChat = channel === 'chat';
+          const isEmail = channel === 'email';
+          const date = msg.created_datetime || msg.sent_datetime || '';
+          const formattedDate = date ? new Date(date).toISOString().replace('T', ' ').slice(0, 19) + ' UTC' : 'no date';
+          const fromAgent = msg.from_agent === true;
+
+          let channelLabel = isNote ? '📝 INTERNAL NOTE' : isChat ? '💬 CHAT' : isEmail ? '📧 EMAIL' : `📨 ${channel.toUpperCase()}`;
+          let roleLabel = fromAgent ? '🤖 AGENT' : '👤 CUSTOMER';
+          if (isNote) roleLabel = '📝 NOTE';
+
+          let body = msg.body_text || '';
+          if (!body && msg.body_html) {
+            body = msg.body_html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+          }
+          if (body.length > 2000) body = body.substring(0, 2000) + '... [truncated]';
+
+          const attachments = msg.attachments || [];
+          const attachStr = attachments.length > 0
+            ? `\n   📎 Attachments: ${attachments.map(a => a.name || a.url).join(', ')}`
+            : '';
+
+          return `[${formattedDate}] ${channelLabel} | ${roleLabel} — ${senderName} <${senderEmail}>\n${body}${attachStr}`;
+        });
+
+        const header = `=== TICKET #${ticket_id} — ${allMessages.length} messages (${fetch_all ? 'ALL fetched' : 'single page'}) ===\n`;
+        const noteCount = allMessages.filter(m => m.channel === 'internal-note').length;
+        const emailCount = allMessages.filter(m => m.channel === 'email').length;
+        const chatCount = allMessages.filter(m => m.channel === 'chat').length;
+        const otherCount = allMessages.length - noteCount - emailCount - chatCount;
+        const stats = `📊 Breakdown: ${emailCount} emails, ${noteCount} internal notes, ${chatCount} chat${otherCount > 0 ? `, ${otherCount} other` : ''}\n`;
+
+        const output = header + stats + '\n' + formattedSorted.join('\n\n---\n\n');
+        return { content: [{ type: "text", text: output }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "List all messages for a ticket" }
+    { description: "List ALL messages for a ticket with full conversation view. Auto-paginates by default (fetch_all=true) to show EVERY message. Output is formatted chronologically with sender name, email, date, channel type (📧 EMAIL / 📝 INTERNAL NOTE / 💬 CHAT), role (AGENT/CUSTOMER), body text, and attachments. Shows the SAME conversation human agents see in Gorgias." }
   );
 
   server.tool(
@@ -238,23 +423,29 @@ function createServer() {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Delete a message from a ticket" }
+    { description: "⚠️ DANGER: Permanently delete a message from a ticket. IRREVERSIBLE — message history is lost forever." }
   );
 
   // ===== CUSTOMER TOOLS =====
 
   server.tool(
     "list_customers",
-    { limit: z.number().min(1).max(100).default(10).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor"), email: z.string().email().optional().describe("Filter by email") },
-    async (params) => {
+    { fetch_all: z.boolean().default(false).describe("true = get ALL customers. false (DEFAULT) = single page."), limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor"), email: z.string().email().optional().describe("Filter by email") },
+    async ({ fetch_all, limit, cursor, ...filters }) => {
       try {
+        if (fetch_all) {
+          const { items, pages } = await fetchAllPages((p) => gorgiasClient.listCustomers({ ...p, ...filters }));
+          return { content: [{ type: "text", text: `${items.length} customers found (${pages} pages)\n\n${JSON.stringify(items, null, 2)}` }] };
+        }
+        const params = { limit, ...filters };
+        if (cursor) params.cursor = cursor;
         const response = await gorgiasClient.listCustomers(params);
         return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "List customers with optional email filter" }
+    { description: "List customers with optional email filter. Set fetch_all=true to auto-paginate all results." }
   );
 
   server.tool(
@@ -303,16 +494,22 @@ function createServer() {
 
   server.tool(
     "list_tags",
-    { limit: z.number().min(1).max(100).default(30).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor"), order_by: z.string().optional().describe("Field to order by") },
-    async (params) => {
+    { fetch_all: z.boolean().default(true).describe("true (DEFAULT) = auto-paginate ALL tags. false = single page."), limit: z.number().min(1).max(100).default(30).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
+    async ({ fetch_all, limit, cursor }) => {
       try {
+        if (fetch_all) {
+          const { items, pages } = await fetchAllPages((p) => gorgiasClient.listTags(p));
+          return { content: [{ type: "text", text: `${items.length} tags found (${pages} pages)\n\n${JSON.stringify(items, null, 2)}` }] };
+        }
+        const params = { limit };
+        if (cursor) params.cursor = cursor;
         const response = await gorgiasClient.listTags(params);
         return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "List all tags" }
+    { description: "List all tags. Auto-paginates by default (fetch_all=true) to return ALL tags." }
   );
 
   server.tool(
@@ -320,13 +517,22 @@ function createServer() {
     { name: z.string().describe("Tag name") },
     async (data) => {
       try {
+        // Duplicate check: see if tag with same name already exists
+        try {
+          const existing = await gorgiasClient.listTags({ limit: 100 });
+          const allTags = existing.data?.data || existing.data || [];
+          const dup = allTags.find(t => t.name && t.name.toLowerCase() === data.name.toLowerCase());
+          if (dup) {
+            return { content: [{ type: "text", text: `DUPLICATE BLOCKED: Tag "${dup.name}" already exists (ID: ${dup.id}). Use this ID directly.` }], isError: true };
+          }
+        } catch (dupErr) { /* non-blocking */ }
         const response = await gorgiasClient.createTag(data);
         return { content: [{ type: "text", text: `Tag created: ${response.data.name} (ID: ${response.data.id})` }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Create a new tag" }
+    { description: "Create a new tag. CHECKS FOR DUPLICATES — blocks if tag name already exists." }
   );
 
   server.tool(
@@ -361,16 +567,22 @@ function createServer() {
 
   server.tool(
     "list_macros",
-    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
-    async (params) => {
+    { fetch_all: z.boolean().default(true).describe("true (DEFAULT) = get ALL macros. false = single page."), limit: z.number().min(1).max(100).default(30).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
+    async ({ fetch_all, limit, cursor }) => {
       try {
+        if (fetch_all) {
+          const { items, pages } = await fetchAllPages((p) => gorgiasClient.listMacros(p));
+          return { content: [{ type: "text", text: `${items.length} macros found (${pages} pages)\n\n${JSON.stringify(items, null, 2)}` }] };
+        }
+        const params = { limit };
+        if (cursor) params.cursor = cursor;
         const response = await gorgiasClient.listMacros(params);
         return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "List all macros (saved replies/templates)" }
+    { description: "List all macros (saved replies/templates). Auto-paginates by default to return ALL macros." }
   );
 
   server.tool(
@@ -588,39 +800,51 @@ function createServer() {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Delete a macro" }
+    { description: "⚠️ DANGER: Permanently delete a macro. IRREVERSIBLE — must be recreated from scratch if deleted by mistake." }
   );
 
   // ===== SATISFACTION SURVEY TOOLS =====
 
   server.tool(
     "list_satisfaction_surveys",
-    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor"), ticket_id: z.number().optional().describe("Filter by ticket ID") },
-    async (params) => {
+    { fetch_all: z.boolean().default(false).describe("true = get ALL surveys. false (DEFAULT) = single page."), limit: z.number().min(1).max(100).default(30).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor"), ticket_id: z.number().optional().describe("Filter by ticket ID") },
+    async ({ fetch_all, limit, cursor, ...filters }) => {
       try {
+        if (fetch_all) {
+          const { items, pages } = await fetchAllPages((p) => gorgiasClient.listSatisfactionSurveys({ ...p, ...filters }));
+          return { content: [{ type: "text", text: `${items.length} surveys found (${pages} pages)\n\n${JSON.stringify(items, null, 2)}` }] };
+        }
+        const params = { limit, ...filters };
+        if (cursor) params.cursor = cursor;
         const response = await gorgiasClient.listSatisfactionSurveys(params);
         return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "List satisfaction surveys" }
+    { description: "List satisfaction surveys (CSAT data). Set fetch_all=true to get all surveys." }
   );
 
   // ===== USER/AGENT TOOLS =====
 
   server.tool(
     "list_users",
-    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
-    async (params) => {
+    { fetch_all: z.boolean().default(true).describe("true (DEFAULT) = get ALL users. false = single page."), limit: z.number().min(1).max(100).default(30).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
+    async ({ fetch_all, limit, cursor }) => {
       try {
+        if (fetch_all) {
+          const { items, pages } = await fetchAllPages((p) => gorgiasClient.listUsers(p));
+          return { content: [{ type: "text", text: `${items.length} users found (${pages} pages)\n\n${JSON.stringify(items, null, 2)}` }] };
+        }
+        const params = { limit };
+        if (cursor) params.cursor = cursor;
         const response = await gorgiasClient.listUsers(params);
         return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "List all users/agents" }
+    { description: "List all users/agents. Auto-paginates by default." }
   );
 
   server.tool(
@@ -641,16 +865,22 @@ function createServer() {
 
   server.tool(
     "list_rules",
-    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
-    async (params) => {
+    { fetch_all: z.boolean().default(true).describe("true (DEFAULT) = get ALL rules. false = single page."), limit: z.number().min(1).max(100).default(30).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
+    async ({ fetch_all, limit, cursor }) => {
       try {
+        if (fetch_all) {
+          const { items, pages } = await fetchAllPages((p) => gorgiasClient.listRules(p));
+          return { content: [{ type: "text", text: `${items.length} rules found (${pages} pages)\n\n${JSON.stringify(items, null, 2)}` }] };
+        }
+        const params = { limit };
+        if (cursor) params.cursor = cursor;
         const response = await gorgiasClient.listRules(params);
         return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "List all automation rules" }
+    { description: "List all automation rules. Auto-paginates by default (fetch_all=true) to return ALL rules." }
   );
 
   server.tool(
@@ -671,16 +901,22 @@ function createServer() {
 
   server.tool(
     "list_views",
-    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
-    async (params) => {
+    { fetch_all: z.boolean().default(true).describe("true (DEFAULT) = get ALL views. false = single page."), limit: z.number().min(1).max(100).default(30).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
+    async ({ fetch_all, limit, cursor }) => {
       try {
+        if (fetch_all) {
+          const { items, pages } = await fetchAllPages((p) => gorgiasClient.listViews(p));
+          return { content: [{ type: "text", text: `${items.length} views found (${pages} pages)\n\n${JSON.stringify(items, null, 2)}` }] };
+        }
+        const params = { limit };
+        if (cursor) params.cursor = cursor;
         const response = await gorgiasClient.listViews(params);
         return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "List all views" }
+    { description: "List all views. Auto-paginates by default. Key views: 1374210 (Unreplied), 1374209 (Open replied), 1374202 (All open)." }
   );
 
   server.tool(
@@ -699,16 +935,41 @@ function createServer() {
 
   server.tool(
     "get_view_tickets",
-    { id: z.number().describe("View ID"), limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
-    async ({ id, ...params }) => {
+    {
+      id: z.number().describe("View ID"),
+      fetch_all: z.boolean().default(false).describe("true = auto-paginate ALL tickets in view. false (DEFAULT) = single page."),
+      limit: z.number().min(1).max(100).default(30).describe("Results per page"),
+      cursor: z.string().optional().describe("Pagination cursor (only when fetch_all=false)")
+    },
+    async ({ id, fetch_all, limit, cursor }) => {
       try {
-        const response = await gorgiasClient.getViewTickets(id, params);
-        return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
+        if (fetch_all) {
+          let allTickets = [];
+          let nextCursor = undefined;
+          let page = 0;
+          const maxPages = 50; // Safety: max 5000 tickets
+          do {
+            const params = { limit: 100 };
+            if (nextCursor) params.cursor = nextCursor;
+            const response = await gorgiasClient.getViewTickets(id, params);
+            const data = response.data;
+            const tickets = data?.data || data || [];
+            allTickets = allTickets.concat(tickets);
+            nextCursor = data?.meta?.next_cursor || null;
+            page++;
+          } while (nextCursor && page < maxPages);
+          return { content: [{ type: "text", text: `View ${id}: ${allTickets.length} total tickets (${page} pages fetched)\n\n${JSON.stringify(allTickets, null, 2)}` }] };
+        } else {
+          const params = { limit };
+          if (cursor) params.cursor = cursor;
+          const response = await gorgiasClient.getViewTickets(id, params);
+          return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
+        }
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Get all tickets in a specific view. Use list_views first to find view IDs, then use this to see the same ticket queues your team sees in the Gorgias UI." }
+    { description: "Get tickets in a specific view. Set fetch_all=true to auto-paginate ALL tickets. Key view IDs: 1374210 (Unreplied), 1374209 (Open replied), 1374202 (All open), 1374200 (DF Prime), 1365871 (Claims), 1365869 (ShipBob)." }
   );
 
   // ===== TICKET MERGE TOOL =====
@@ -790,21 +1051,100 @@ function createServer() {
     "update_rule",
     {
       id: z.number().describe("Rule ID to update"),
-      name: z.string().optional().describe("Updated rule name"),
-      description: z.string().optional().describe("Updated description"),
+      mode: z.enum(["add", "replace"]).default("add").describe("Mode: 'add' (DEFAULT, SAFE) = merges new actions/conditions ON TOP of existing, preserving everything. 'replace' = full replacement (DANGEROUS)."),
+      name: z.string().optional().describe("Updated rule name (auto-preserved if omitted)"),
+      description: z.string().optional().describe("Updated description (auto-preserved if omitted)"),
       enabled: z.boolean().optional().describe("Enable or disable the rule"),
-      conditions: z.any().optional().describe("Updated conditions"),
-      actions: z.any().optional().describe("Updated actions")
+      conditions: z.any().optional().describe("Conditions to add/merge (mode=add) or replace entirely (mode=replace)"),
+      actions: z.any().optional().describe("Actions to add/merge (mode=add) or replace entirely (mode=replace)")
     },
-    async ({ id, ...data }) => {
+    async ({ id, mode, name, description, enabled, conditions, actions }) => {
       try {
-        await gorgiasClient.updateRule(id, data);
-        return { content: [{ type: "text", text: `Rule ${id} updated` }] };
+        // ALWAYS fetch existing rule first — needed for safe merge
+        const existingResp = await gorgiasClient.getRule(id);
+        const existingData = existingResp.data;
+        const existingActions = existingData.actions || [];
+        const existingConditions = existingData.conditions || {};
+
+        const ruleData = {};
+
+        // Name & description: preserve existing if not provided
+        ruleData.name = name || existingData.name;
+        if (description !== undefined) {
+          ruleData.description = description;
+        } else if (existingData.description) {
+          ruleData.description = existingData.description;
+        }
+
+        // Enabled: only change if explicitly provided
+        if (enabled !== undefined) {
+          ruleData.enabled = enabled;
+        }
+
+        let finalActions;
+        let finalConditions;
+        let modeUsed;
+
+        if (mode === 'replace') {
+          // ===== REPLACE MODE: Full replacement (DANGEROUS) =====
+          finalActions = actions || existingActions;
+          finalConditions = conditions || existingConditions;
+          modeUsed = 'REPLACE (full overwrite)';
+        } else {
+          // ===== ADD MODE (DEFAULT): Merge, never remove =====
+          // Actions: append new action types, update existing by name match
+          finalActions = [...existingActions];
+          if (actions && Array.isArray(actions)) {
+            const existingByType = {};
+            finalActions.forEach((a, i) => { existingByType[a.type || a.name || i] = i; });
+            for (const newAction of actions) {
+              const key = newAction.type || newAction.name;
+              if (key && existingByType[key] !== undefined) {
+                // Update existing action in-place
+                finalActions[existingByType[key]] = { ...finalActions[existingByType[key]], ...newAction };
+              } else {
+                // Append new action
+                finalActions.push(newAction);
+              }
+            }
+          }
+
+          // Conditions: deep merge
+          finalConditions = { ...existingConditions };
+          if (conditions && typeof conditions === 'object') {
+            // Merge top-level condition keys
+            for (const [key, value] of Object.entries(conditions)) {
+              if (Array.isArray(value) && Array.isArray(finalConditions[key])) {
+                // Array conditions: append new items, deduplicate by JSON comparison
+                const existingJson = new Set(finalConditions[key].map(c => JSON.stringify(c)));
+                const merged = [...finalConditions[key]];
+                for (const item of value) {
+                  if (!existingJson.has(JSON.stringify(item))) {
+                    merged.push(item);
+                  }
+                }
+                finalConditions[key] = merged;
+              } else {
+                finalConditions[key] = value;
+              }
+            }
+          }
+          modeUsed = 'ADD (merge, existing preserved)';
+        }
+
+        ruleData.actions = finalActions;
+        ruleData.conditions = finalConditions;
+
+        await gorgiasClient.updateRule(id, ruleData);
+
+        const actionsBefore = existingActions.map(a => a.type || a.name || 'unknown').join(', ');
+        const actionsAfter = finalActions.map(a => a.type || a.name || 'unknown').join(', ');
+        return { content: [{ type: "text", text: `Rule ${id} updated [${modeUsed}].\n  Name: ${ruleData.name}\n  Actions before: [${actionsBefore}]\n  Actions after: [${actionsAfter}]\n  Conditions: ${mode === 'replace' ? 'replaced' : 'merged'}` }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "Update an existing automation rule (name, conditions, actions, enable/disable)" }
+    { description: "Update an automation rule with SAFE MERGE (mode='add' default). Fetches existing rule first, preserves all existing actions/conditions, merges new ones on top. Use mode='replace' ONLY when you explicitly want to overwrite everything. Name and description auto-preserved if omitted." }
   );
 
   server.tool(
@@ -827,48 +1167,66 @@ function createServer() {
 
   server.tool(
     "list_events",
-    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor"), customer_id: z.number().optional().describe("Filter by customer ID"), ticket_id: z.number().optional().describe("Filter by ticket ID") },
-    async (params) => {
+    { fetch_all: z.boolean().default(false).describe("true = get ALL events. false (DEFAULT) = single page."), limit: z.number().min(1).max(100).default(30).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor"), customer_id: z.number().optional().describe("Filter by customer ID"), ticket_id: z.number().optional().describe("Filter by ticket ID") },
+    async ({ fetch_all, limit, cursor, ...filters }) => {
       try {
+        if (fetch_all) {
+          const { items, pages } = await fetchAllPages((p) => gorgiasClient.listEvents({ ...p, ...filters }));
+          return { content: [{ type: "text", text: `${items.length} events found (${pages} pages)\n\n${JSON.stringify(items, null, 2)}` }] };
+        }
+        const params = { limit, ...filters };
+        if (cursor) params.cursor = cursor;
         const response = await gorgiasClient.listEvents(params);
         return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "List events with optional filters" }
+    { description: "List events (ticket activity log) with optional filters. Set fetch_all=true to get all events." }
   );
 
   // ===== INTEGRATION TOOLS =====
 
   server.tool(
     "list_integrations",
-    { limit: z.number().min(1).max(100).default(20).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
-    async (params) => {
+    { fetch_all: z.boolean().default(true).describe("true (DEFAULT) = get ALL integrations. false = single page."), limit: z.number().min(1).max(100).default(30).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
+    async ({ fetch_all, limit, cursor }) => {
       try {
+        if (fetch_all) {
+          const { items, pages } = await fetchAllPages((p) => gorgiasClient.listIntegrations(p));
+          return { content: [{ type: "text", text: `${items.length} integrations found (${pages} pages)\n\n${JSON.stringify(items, null, 2)}` }] };
+        }
+        const params = { limit };
+        if (cursor) params.cursor = cursor;
         const response = await gorgiasClient.listIntegrations(params);
         return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "List all integrations" }
+    { description: "List all integrations. Auto-paginates by default. Key IDs: 72926/77524/77523 (Main CS), 128936 (DF Prime), 128508 (Claims), 128507 (ShipBob)." }
   );
 
   // ===== CUSTOM FIELD DEFINITION TOOLS =====
 
   server.tool(
     "list_custom_fields",
-    { object_type: z.enum(["Ticket", "Customer"]).describe("Entity type: 'Ticket' or 'Customer'"), limit: z.number().min(1).max(100).default(30).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
-    async (params) => {
+    { object_type: z.enum(["Ticket", "Customer"]).describe("Entity type: 'Ticket' or 'Customer'"), fetch_all: z.boolean().default(true).describe("true (DEFAULT) = get ALL fields. false = single page."), limit: z.number().min(1).max(100).default(30).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
+    async ({ object_type, fetch_all, limit, cursor }) => {
       try {
+        if (fetch_all) {
+          const { items, pages } = await fetchAllPages((p) => gorgiasClient.listCustomFields({ ...p, object_type }));
+          return { content: [{ type: "text", text: `${items.length} ${object_type} custom fields found (${pages} pages)\n\n${JSON.stringify(items, null, 2)}` }] };
+        }
+        const params = { object_type, limit };
+        if (cursor) params.cursor = cursor;
         const response = await gorgiasClient.listCustomFields(params);
         return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "List all custom field definitions. MUST specify object_type: 'Ticket' for ticket fields (contact reason, etc) or 'Customer' for customer fields." }
+    { description: "List all custom field definitions. MUST specify object_type: 'Ticket' or 'Customer'. Auto-paginates by default." }
   );
 
   server.tool(
@@ -1026,16 +1384,22 @@ function createServer() {
 
   server.tool(
     "list_custom_field_conditions",
-    { object_type: z.enum(["Ticket", "Customer"]).describe("Entity type: 'Ticket' or 'Customer'"), limit: z.number().min(1).max(100).default(30).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
-    async (params) => {
+    { object_type: z.enum(["Ticket", "Customer"]).describe("Entity type: 'Ticket' or 'Customer'"), fetch_all: z.boolean().default(true).describe("true (DEFAULT) = get ALL conditions. false = single page."), limit: z.number().min(1).max(100).default(30).describe("Results per page"), cursor: z.string().optional().describe("Pagination cursor") },
+    async ({ object_type, fetch_all, limit, cursor }) => {
       try {
+        if (fetch_all) {
+          const { items, pages } = await fetchAllPages((p) => gorgiasClient.listCustomFieldConditions({ ...p, object_type }));
+          return { content: [{ type: "text", text: `${items.length} ${object_type} conditions found (${pages} pages)\n\n${JSON.stringify(items, null, 2)}` }] };
+        }
+        const params = { object_type, limit };
+        if (cursor) params.cursor = cursor;
         const response = await gorgiasClient.listCustomFieldConditions(params);
         return { content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
       }
     },
-    { description: "List all custom field conditions (visibility rules, dependencies between fields). Read-only — conditions are managed in Gorgias UI." }
+    { description: "List all custom field conditions (visibility rules, field dependencies). Auto-paginates by default." }
   );
 
   // ===== ACCOUNT TOOLS =====
