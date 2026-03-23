@@ -1036,12 +1036,13 @@ function createServer() {
       code: z.string().optional().describe("Rule code/logic as a string. REQUIRED for rules with custom logic (containsAny, script conditions, complex branching). This is the actual rule definition that Gorgias executes. Pass the full rule code as a string."),
       conditions: z.any().optional().describe("Rule conditions (trigger criteria) — structured format. Use 'code' instead for complex logic."),
       actions: z.any().optional().describe("Rule actions (what happens when triggered) — structured format. Use 'code' instead for complex logic."),
+      event_types: z.string().optional().describe("Comma-separated event types that trigger the rule, e.g. 'ticket-created,ticket-updated', 'message-created'. Field name is PLURAL event_types."),
       position: z.number().optional().describe("Rule execution order position")
     },
     async (data) => {
       try {
         const response = await gorgiasClient.createRule(data);
-        return { content: [{ type: "text", text: `Rule created: ${response.data.name} (ID: ${response.data.id})\nEnabled: ${response.data.enabled}\n${response.data.code ? 'Code: included' : 'Code: none (structured conditions/actions only)'}` }] };
+        return { content: [{ type: "text", text: `Rule created: ${response.data.name} (ID: ${response.data.id})\nEnabled: ${response.data.enabled}\nEvent types: ${response.data.event_types || 'none'}\n${response.data.code ? 'Code: included' : 'Code: none (structured conditions/actions only)'}` }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error creating rule: ${error.message}\n\nTIP: If you get "code: Missing data for required field", you must pass the 'code' parameter with the full rule logic string. Most Gorgias rules require the 'code' field — structured conditions/actions alone are often insufficient.` }], isError: true };
       }
@@ -1060,9 +1061,10 @@ function createServer() {
       code: z.string().optional().describe("Rule code/logic as a string. When provided, REPLACES the entire rule logic regardless of mode. This is the actual rule definition that Gorgias executes."),
       conditions: z.any().optional().describe("Conditions to add/merge (mode=add) or replace entirely (mode=replace). Ignored if 'code' is provided."),
       actions: z.any().optional().describe("Actions to add/merge (mode=add) or replace entirely (mode=replace). Ignored if 'code' is provided."),
+      event_types: z.string().optional().describe("Comma-separated event types that trigger the rule, e.g. 'ticket-created,ticket-updated'. Field name is PLURAL event_types."),
       position: z.number().optional().describe("Rule execution order position")
     },
-    async ({ id, mode, name, description, enabled, code, conditions, actions, position }) => {
+    async ({ id, mode, name, description, enabled, code, conditions, actions, event_types, position }) => {
       try {
         // ALWAYS fetch existing rule first — needed for safe merge
         const existingResp = await gorgiasClient.getRule(id);
@@ -1086,6 +1088,7 @@ function createServer() {
         }
 
         // Pass through optional fields if provided
+        if (event_types !== undefined) ruleData.event_types = event_types;
         if (position !== undefined) ruleData.position = position;
 
         // If 'code' is provided, it replaces the entire rule logic — skip conditions/actions merge
