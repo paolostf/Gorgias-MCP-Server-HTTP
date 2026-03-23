@@ -1039,8 +1039,7 @@ function createServer() {
       event_type: z.string().optional().describe("Event type that triggers the rule, e.g. 'ticket-created', 'ticket-updated', 'message-created'"),
       event_channel: z.string().optional().describe("Channel filter, e.g. 'email', 'chat', 'all'"),
       event_object_type: z.string().optional().describe("Object type, e.g. 'ticket', 'message'"),
-      position: z.number().optional().describe("Rule execution order position"),
-      enabled: z.boolean().optional().default(true).describe("Whether the rule is enabled")
+      position: z.number().optional().describe("Rule execution order position")
     },
     async (data) => {
       try {
