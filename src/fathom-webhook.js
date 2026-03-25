@@ -170,8 +170,12 @@ export function fathomWebhookHandler(app) {
         return res.status(401).json({ error: 'Invalid signature' });
       }
 
-      const meeting = req.body;
-      console.log(`[Fathom Webhook] Received: ${meeting.title || meeting.meeting_title || '?'} (id: ${meeting.recording_id})`);
+      // Fathom may send flat meeting data or wrap in {event, data}
+      const raw = req.body;
+      const meeting = raw.data && typeof raw.data === 'object' && (raw.data.title || raw.data.recording_id)
+        ? raw.data
+        : raw;
+      console.log(`[Fathom Webhook] Received: ${meeting.title || meeting.meeting_title || '?'} (id: ${meeting.recording_id || meeting.call_id || '?'})`);
 
       // Respond 200 immediately so Fathom doesn't retry
       res.status(200).json({ status: 'received' });
