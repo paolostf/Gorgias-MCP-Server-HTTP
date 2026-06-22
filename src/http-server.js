@@ -3,7 +3,6 @@
 import express from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createServer } from './server.js';
-import { fathomWebhookHandler } from './fathom-webhook.js';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 
@@ -24,9 +23,6 @@ const sessions = new Map();
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', server: 'Gorgias MCP Server' });
 });
-
-// --- Fathom Webhook ---
-fathomWebhookHandler(app);
 
 // --- MCP Endpoints ---
 
@@ -83,5 +79,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log('Gorgias MCP Server (HTTP) running on port ' + PORT);
   console.log('MCP endpoint: http://0.0.0.0:' + PORT + '/mcp');
-  console.log('Fathom webhook: http://0.0.0.0:' + PORT + '/fathom-webhook');
 });
